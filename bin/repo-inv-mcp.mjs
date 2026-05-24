@@ -26,21 +26,11 @@ import fs from 'node:fs';
 
 const require = createRequire(import.meta.url);
 const db = require('../lib/db.js');
+const { loadEnvFromFile } = require('../lib/env.js');
 const SUITE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = path.join(SUITE_ROOT, 'bin', 'repo-inv');
 
-// .env loader (mirrors bin/repo-inv to avoid coupling)
-function loadEnv(file) {
-  if (!fs.existsSync(file)) return;
-  for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
-    const m = line.match(/^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*?)\s*$/);
-    if (!m) continue;
-    let v = m[2];
-    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
-    if (!process.env[m[1]]) process.env[m[1]] = v;
-  }
-}
-loadEnv(path.join(SUITE_ROOT, '.env'));
+loadEnvFromFile(path.join(SUITE_ROOT, '.env'));
 
 const TOOLS = [
   {

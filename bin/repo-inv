@@ -716,8 +716,9 @@ function upsertJsonMcp(file, topKey, entryKey, dryRun) {
   cfg[topKey] = cfg[topKey] || {};
   cfg[topKey][entryKey] = buildMcpEntry();
   if (dryRun) {
-    console.log(`# Would write to ${file}:`);
-    console.log(JSON.stringify(cfg, null, 2));
+    console.log(`# Would upsert into ${file}, ${topKey}.${entryKey} =`);
+    console.log(JSON.stringify(buildMcpEntry(), null, 2));
+    console.log(`# (other keys in the file are preserved untouched)`);
     return;
   }
   if (fs.existsSync(file)) {
@@ -747,8 +748,9 @@ function upsertCodexToml(file, dryRun) {
     next = existing.trimEnd() + (existing.trim() ? '\n\n' : '') + block;
   }
   if (dryRun) {
-    console.log(`# Would write to ${file}:`);
-    console.log(next);
+    console.log(`# Would upsert into ${file}, [mcp_servers.repo-inv] block:`);
+    console.log(block.trimEnd());
+    console.log(`# (other [mcp_servers.*] blocks and the rest of the file are preserved)`);
     return;
   }
   if (fs.existsSync(file)) fs.copyFileSync(file, file + '.bak');

@@ -1,15 +1,113 @@
 # Code Analysis Suite
 
-## Tools Included:
-- **Code2Flow**: Logic flowchart generation. (`code2flow`)
-- **pydeps**: Python module dependency graphs. (`pydeps`)
-- **pyan3**: Static call graphs for Python. (`pyan3`)
-- **Semgrep**: Semantic search and linting. (`semgrep`)
-- **Dependency-Cruiser**: TS/JS dependency analysis. (`npx depcruise`)
-- **Madge**: Visualizing TS/JS dependencies. (`npx madge`)
-- **Code-Review-Graph (CRG)**: Pre-installed MCP tool for knowledge graph analysis.
+> **这是一个面向 AI Agent 的"开源仓库解剖工具箱"。**
+> 用法：克隆任意一个想研究的开源仓库 → 在 Claude Code / GitHub Copilot CLI 里指向这个 suite →
+> Agent 会自动调用本仓库内 20+ 个静态分析工具，把目标仓库的**架构、业务逻辑、代码质量**全部扒出来，
+> 输出结构化材料供你借鉴、学习、引用。
 
-## Usage Guide:
-- Use CRG tools like `detect_changes` or `get_architecture_overview` for high-level insights.
-- Use `code2flow` to map business logic.
-- Use `pydeps` to understand repository structure.
+**不是给人手动跑的 CLI**，而是给 agent 当"侦察兵"——你只负责选目标，让 agent 跑工具读结果。
+
+---
+
+## 给 Agent 的使用入口（必读）
+
+Agent 接到"分析这个开源仓库"类任务时，**第一步必须用这个 suite**，不要直接 grep 目标仓库。
+
+### 三层扫描（默认全跑）
+
+```bash
+# Node.js CLI（首选）
+node /home/l/code_analysis_suite/bin/repo-inv analyze <target-repo>
+
+# bash 镜像（无 node 环境时用）
+bash /home/l/code_analysis_suite/.agents/skills/repo-investigator/scripts/analyze.sh <target-repo>
+```
+
+输出目录默认 `./investigation-report/`，分三层：
+
+| 目录 | 关注 | 给 agent 的解读建议 |
+|---|---|---|
+| `01-arch/` | 模块结构、依赖图、语言构成、代码量 | 看 `scc.json` 定规模 → `pydeps.svg` / `madge-*` 定模块边界 → `code2flow.gv` / `pyan3-callgraph.dot` 定调用链 |
+| `02-logic/` | 安全规则、重复代码、圈复杂度、类型问题、死代码 | `lizard.txt` top-10 是热点 → `semgrep.json` 是风险 → `vulture.txt` / `jscpd` 是可删/可重构面 |
+| `03-efficiency/` | 性能、复杂度趋势、内存 | `radon-cc.txt` / `wily.txt` 看演化，py-spy/memray 需可运行场景 |
+
+最终 `SUMMARY.md` 在输出根目录，是给人/agent 看的人读视图。
+
+### 推荐工作流（agent 拿到一个新仓库时）
+
+1. **`node bin/repo-inv tools`** — 先看本机哪些工具可用（缺的会跳过，不会报错）
+2. **`node bin/repo-inv analyze <target>`** — 跑全量三层
+3. **读 `SUMMARY.md` + `01-arch/scc.txt`** — 形成第一印象
+4. **结合 code-review-graph MCP**（`semantic_search_nodes` / `query_graph` / `get_architecture_overview`）做交叉验证
+5. **挑 `lizard` top-10 复杂函数 + 调用图入口** —— 这两个加起来就是"业务逻辑骨架"
+6. **把 `semgrep.json` + `vulture.txt` + `jscpd` 当成"质量画像"** 输出给用户
+
+### 单工具补救
+
+如果某层的关键工具在目标机器缺失，agent 应主动安装而不是绕开：
+
+```bash
+node bin/repo-inv tool <name>     # 看安装提示
+# 例：pip install vulture / brew install scc / npm i -g madge
+```
+
+---
+
+## 工具清单（按层）
+
+### 01 Architecture — "这个仓库长什么样"
+| 工具 | 干什么 |
+|---|---|
+| `scc` / `tokei` | 极速代码统计，定项目规模与语言构成 |
+| `pydeps` | Python 模块依赖 SVG（自动检测包名） |
+| `madge` / `depcruise` | JS/TS 模块依赖图 + 循环检测 |
+| `code2flow` / `pyan3` | Python/JS 调用流程图（→ Graphviz dot） |
+| `ast-grep` | AST 模式搜索 |
+| `staticcheck` / `golangci-lint` | Go 静态分析 |
+| `d2` / `joern` / `codeql` | 标记为 `manual`，需交互式/重型环境，不参与自动 analyze |
+
+### 02 Logic — "代码质量与风险"
+| 工具 | 干什么 |
+|---|---|
+| `semgrep` | 多语言 SAST，规则即代码（含 `--config=auto`） |
+| `lizard` | 多语言圈复杂度（CCN > 15 关注，> 50 必重构） |
+| `jscpd` | 跨语言重复代码检测 |
+| `pyright` | Python 静态类型检查 |
+| `vulture` | Python 死代码检测 |
+
+### 03 Efficiency — "性能与演化"
+| 工具 | 干什么 |
+|---|---|
+| `radon` | Python 圈复杂度 / 可维护性 |
+| `wily` | Python 复杂度随 git 演化 |
+| `py-spy` / `memray` | 运行时性能/内存采样（需可运行的入口） |
+
+完整每工具用法见 **`.agents/skills/repo-investigator/docs/TOOLS_GUIDE.md`**。
+
+---
+
+## 仓库自身结构
+
+| 路径 | 作用 |
+|---|---|
+| `bin/repo-inv` | commander CLI，5 个子命令（`analyze` / `tools` / `tool` / `report` / `init`） |
+| `lib/tools.js` | **工具元数据唯一来源**（注册表 + 检测命令 + 示例 + tips） |
+| `lib/runner.js` | 三层执行引擎，`hasCommand` 探测 → `spawn` 调用 → 写文件 → `generateSummary` 汇总 |
+| `.agents/skills/repo-investigator/` | Skill 镜像（`SKILL.md` + bash 版 `analyze.sh` + per-tool 中文 docs） |
+| `.github/copilot-instructions.md` | Copilot agent 进入本仓库后的工作约定 |
+| `CLAUDE.md` / `CLAUDE_CODE_GUIDE.md` | Claude Code agent 的工作约定与命令参考 |
+| `COPILOT_USAGE_GUIDE.md` | Copilot CLI 全命令 / Skills / 工具速查 |
+
+> **代码改动约定**：加新工具必须三处同步——`lib/tools.js` 注册表 + `lib/runner.js` 对应 `run*` 函数 + `.agents/skills/repo-investigator/scripts/analyze.sh`。
+
+---
+
+## Agent 行为规则（重要）
+
+1. **不要绕过 suite 直接 grep 目标仓库** —— 浪费 token，且会漏掉调用图/复杂度等结构化信息。
+2. **不存在的工具 silently skip 是设计** —— 不要尝试"修复"，缺工具就提示用户安装。
+3. **跑完务必读 `SUMMARY.md`** —— 它是工具产物的人读切片，里面已经把关键指标摘出来了。
+4. **目标仓库为 Python 项目**：优先看 `pydeps.svg + pyan3-callgraph.dot + lizard + vulture + pyright`。
+5. **目标仓库为 JS/TS**：优先看 `madge-circular.txt + depcruise.dot + jscpd + semgrep`。
+6. **目标仓库为 Go**：优先看 `scc + staticcheck.json + golangci-lint.json + semgrep`。
+7. **任何时候都可调** `code-review-graph` MCP 工具（`semantic_search_nodes` / `detect_changes` / `get_impact_radius`）做语义层验证——见 `CLAUDE.md` 顶部说明。

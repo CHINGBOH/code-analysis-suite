@@ -73,7 +73,10 @@ node bin/repo-inv tool <name>     # 看安装提示
 | `lizard` | 多语言圈复杂度（CCN > 15 关注，> 50 必重构） |
 | `jscpd` | 跨语言重复代码检测 |
 | `pyright` | Python 静态类型检查 |
+| `mypy` | Python 类型检查参考实现（与 pyright 双确认） |
+| `bandit` | Python 安全扫描（OWASP，semgrep 补盲） |
 | `vulture` | Python 死代码检测 |
+| `gosec` | Go 安全扫描（hardcoded creds / SQL 注入 / 弱 RNG） |
 
 ### 03 Efficiency — "性能与演化"
 | 工具 | 干什么 |

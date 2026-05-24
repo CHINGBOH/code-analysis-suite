@@ -84,6 +84,43 @@ node bin/repo-inv recommend "我要给 LLM agent 框架加上带重试和限流�
 
 模式规则可自定义：编辑 `rules/patterns.yml`（semgrep 语法），或用 `--rules <path>` 指定其他规则集。
 
+### MCP server + Skill 自动注册（Sprint 3 新增）
+
+让 agent 不用 shell 出去——直接通过 MCP 调用所有能力。
+
+**给 Claude Code / Copilot CLI 注册：**
+
+```jsonc
+// ~/.copilot/mcp-config.json （Copilot CLI）
+// 或 ~/.config/claude/claude_desktop_config.json （Claude Desktop）
+{
+  "servers": {
+    "repo-inv": {
+      "command": "node",
+      "args": ["/home/l/code_analysis_suite/bin/repo-inv-mcp.mjs"],
+      "cwd": "/home/l/code_analysis_suite",
+      "type": "stdio"
+    }
+  }
+}
+```
+
+**MCP 暴露的 9 个工具：**
+
+| 工具 | 用途 |
+|---|---|
+| `list_repos` | 列已索引仓库（order_by: recent/size/quality/complexity） |
+| `search_knowledge` | FTS5 搜 LEARNINGS+SUMMARY，可按 lang/max_ccn 过滤 |
+| `compare_repos` | 两个仓库的指标 / 语言 / hotspot diff |
+| `get_repo_details` | 取某仓库完整记录（含 languages/hotspots/patterns） |
+| `patterns_of_repo` | 某仓库检测到的架构模式列表 |
+| `repos_with_pattern` | 反查：哪些仓库用了某模式 |
+| `extract_code` | 把文件+1-hop import 拆出来，返回 manifest |
+| `analyze_repo` | 跑一次新分析并入库（长耗时） |
+| `recommend` | DeepSeek 推荐"抄哪个仓库的哪个文件" |
+
+**Skill 自动发现**：`.agents/skills/repo-investigator/SKILL.md` 已通过 `~/.copilot/skills/repo-investigator` 软链注册，新会话开局即可被 agent 识别使用。
+
 ### 单工具补救
 
 如果某层的关键工具在目标机器缺失，agent 应主动安装而不是绕开：

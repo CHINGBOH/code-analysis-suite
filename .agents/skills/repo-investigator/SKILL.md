@@ -1,143 +1,144 @@
 ---
 name: repo-investigator
 description: |
-  Full-stack code repository investigation toolkit. Covers architecture (folder/module level), 
-  business logic (file/call-graph level), and code efficiency (function/performance level).
-  Integrates 20+ open-source tools into a unified CLI for rapid open-source library analysis.
+  Full-stack open-source repository investigation toolkit. Run as `node /home/l/code_analysis_suite/bin/repo-inv <cmd>`.
+  Three-layer analysis (architecture / business logic / quality) + cross-repo SQLite knowledge base
+  + architectural pattern detection + code extraction + AI-powered "mix-and-match copy-from-OSS"
+  recommendations. Wraps 29 best-in-class static analysis tools (semgrep / lizard / pyright / mypy /
+  bandit / gosec / vulture / jscpd / scc / madge / pydeps / radon / wily / py-spy / memray / ...).
 metadata:
-  short-description: Investigate any codebase in 3 layers
+  short-description: Analyze any cloned repo across 3 layers, index it, then mix-and-match-copy
   author: code_analysis_suite
-  version: 1.0.0
+  version: 2.0.0
+  cli-prefix: node /home/l/code_analysis_suite/bin/repo-inv
 ---
 
 # Repo Investigator
 
-A three-layer investigation framework for analyzing any software repository:
+When the user clones an open-source project and wants to **learn from / borrow / port code out of it**,
+this is the toolkit. It does three things in one CLI:
 
-1. **Architecture Layer** — folder structure, module dependencies, system design
-2. **Business Logic Layer** — control flow, data flow, code quality, security
-3. **Efficiency Layer** — performance hotspots, complexity, memory usage
+1. **Per-repo investigation** — 3 layers (arch / logic / efficiency) → `report.json` + `SUMMARY.md` + `LEARNINGS.md`
+2. **Cross-repo knowledge base** — every analyzed repo is auto-indexed into `~/.cache/repo-inv/index.db` (SQLite + FTS5)
+3. **Mix-and-match copy** — detect patterns, extract code with deps, and ask DeepSeek which repo's solution to borrow for a given task
 
-## Quick Start
+## Default Workflow (use this verbatim when a user gives you a cloned repo)
 
 ```bash
-# Run full investigation on a repo
-repo-investigate /path/to/repo
+CLI=node /home/l/code_analysis_suite/bin/repo-inv
 
-# Run single layer
-repo-investigate --layer=arch /path/to/repo
-repo-investigate --layer=logic /path/to/repo
-repo-investigate --layer=efficiency /path/to/repo
+# 0. Confirm tool inventory (skip-if-missing is automatic — never errors)
+$CLI tools
+
+# 1. Full investigation — parallel runs ~3x faster, auto-indexes into knowledge base
+$CLI analyze /path/to/cloned/repo --parallel
+
+# 2. Read the agent-facing report
+cat ~/.cache/repo-inv/<repo-name>-<ts>/report.json   # structured (use this first!)
+cat ~/.cache/repo-inv/<repo-name>-<ts>/SUMMARY.md    # human-readable
+
+# 3. Get a synthesized learning brief (uses DeepSeek via .env)
+$CLI learn
+
+# 4. Tag the repo with architectural patterns (writes into the index too)
+$CLI patterns /path/to/cloned/repo
+
+# 5. When the user asks "how would I do X?", consult the cross-repo brain:
+$CLI list --by quality                    # what's in the library
+$CLI search "retry OR backoff"            # FTS5 over learnings + summaries
+$CLI compare repo-a repo-b                # side-by-side diff
+$CLI recommend "build feature X"          # DeepSeek picks best repos to copy from
+$CLI extract /path/repo file.py --out ./vendor/x   # transplant code with imports
 ```
 
-## Prerequisites
+## Subcommand Reference
 
-All tools are pre-installed on this machine. If missing, run:
+| Command | Purpose | When to use |
+|---|---|---|
+| `analyze <repo> [--parallel] [--layer arch,logic,efficiency]` | Run 3-layer scan, write report.json + SUMMARY.md, auto-index | **Always first** on a new repo |
+| `tools [--layer X]` | List 29 tools with install status | Diagnose missing dependencies |
+| `tool <name>` | Show install hint + sample command for one tool | Onboarding a new analyzer |
+| `report [dir]` | Print SUMMARY.md (defaults to latest run) | Quick re-read |
+| `learn [dir]` | DeepSeek synthesis → LEARNINGS.md (architecture / business core / quality / borrowable / risks) | After analyze, before recommend |
+| `patterns <repo>` | Detect 20 architectural patterns via curated semgrep rules; persist to DB | Before `recommend`, or to characterize a repo |
+| `list [--by recent\|size\|quality\|complexity]` | Tabular view of indexed repos | "What have I scanned?" |
+| `search <fts5-query> [--lang X] [--max-ccn N]` | Full-text search over LEARNINGS + SUMMARY with snippets | "Which repo solves Y?" |
+| `compare <repoA> <repoB>` | Metrics + language + hotspot diff, marks A/B winner per metric | Choosing between similar libs |
+| `extract <repo> <file> --out <dir> [--max-hops N]` | Copy file + intra-repo Python imports; emit EXTRACT.json with pip/stdlib split | "I want to port this one function" |
+| `recommend <task...>` | DeepSeek over full catalog → which repo / file / pattern to copy, what to avoid | "How should I build X?" |
+| `init` | Drop a `.repo-inv.json` config in cwd | Per-project tweaks |
 
-```bash
-# Architecture tools
-which d2 joern codeql ast-grep docker
+## What Goes Into the Knowledge Base
 
-# Logic tools  
-which semgrep infer jscpd lizard
+Every `analyze` auto-upserts into `~/.cache/repo-inv/index.db`:
 
-# Efficiency tools
-which py-spy scc tokei speedscope radon memray
-```
+- **repos** — name, commit, language, LOC, complexity, semgrep ERROR / bandit HIGH / pyright errors / mypy errors / vulture / jscpd %, max CCN, full report.json blob, LEARNINGS.md text
+- **languages** — per-language breakdown (files / code / complexity)
+- **hotspots** — top-20 functions with CCN ≥ 15 (location / ccn / nloc)
+- **patterns** (after `patterns` cmd) — detected pattern × hits + sample location
+- **repo_fts** — FTS5 over name / primary_lang / learnings / summary (snippets work)
 
-## Core Workflow
+## Pattern Vocabulary (rules/patterns.yml)
 
-### Step 1: Architecture Overview (30 seconds)
+20 hand-tuned semgrep rules organized by category:
 
-```bash
-cd /path/to/repo
-scc .                    # code size & language mix
-tokei .                  # line count breakdown
-npx madge --circular .   # JS/TS circular deps (if applicable)
-pydeps .                 # Python deps (if applicable)
-```
+- **resilience**: retry, circuit_breaker, rate_limit
+- **async**: async_context, fanout (asyncio.gather)
+- **lifecycle**: context_manager
+- **perf**: cache (lru_cache / cached_property)
+- **extensibility**: plugin_registry, subclass_registry
+- **di**: depends_injection (FastAPI Depends)
+- **typing**: interface (Protocol / ABC / @abstractmethod)
+- **data**: pydantic, dataclass
+- **arch**: middleware, state_machine, events, singleton, builder
+- **testing**: pytest_fixture, hypothesis
 
-### Step 2: Logic & Quality (2 minutes)
+Add custom rules: edit `/home/l/code_analysis_suite/rules/patterns.yml` (standard semgrep syntax),
+or pass `--rules <other.yml>` to override.
 
-```bash
-semgrep --config=auto .  # security & bug patterns
-jscpd .                  # duplicate code detection
-lizard .                 # complexity metrics
-infer run -- make        # C/C++/Java/Obj-C deep analysis
-```
+## report.json Schema (`repo-inv/report@1`)
 
-### Step 3: Efficiency Profile (if runnable)
+Agent-friendly aggregator. Key fields:
 
-```bash
-py-spy record -o profile.svg -- python main.py
-speedscope profile.svg
-memray run python main.py
-memray flamegraph memray-*.bin
-```
-
-### Step 4: Deep Architecture (optional, 10 min)
-
-```bash
-# Joern CPG analysis (C/C++/Java)
-joern /path/to/repo
-# Then in joern shell:
-#   importCode("/path/to/repo")
-#   cpg.method.name.l
-#   cpg.call.code.l
-
-# CodeQL database (requires compilation for compiled languages)
-codeql database create --language=java ./codeql-db --source-root=.
-codeql database analyze ./codeql-db java-security-and-quality.qls --format=sarifv2.1.0 --output=results.sarif
-
-# D2 architecture diagram
-cat > arch.d2 << 'EOF'
-service: {
-  api: API
-  db: Database
+```json
+{
+  "repo": { "name": "...", "path": "/abs/path" },
+  "generated_at": "ISO",
+  "arch": {
+    "languages": [{ "name": "Python", "files": N, "code": N, "complexity": N }],
+    "git": { ... },
+    "has_pydeps_svg": true,
+    "has_callgraph": true
+  },
+  "logic": {
+    "semgrep":  { "total": N, "by_severity": { "ERROR": N, "WARNING": N, "INFO": N } },
+    "pyright":  { "errors": N, "warnings": N, "informations": N },
+    "bandit":   { "total": N, "by_severity": { "HIGH": N, "MEDIUM": N, "LOW": N } },
+    "gosec":    { "total": N, "by_severity": { ... } },
+    "mypy":     { "errors": N },
+    "vulture":  { "candidates": N },
+    "jscpd":    { "duplication_pct": N, "clones": N },
+    "lizard":   { "hotspots_ccn_ge_15": [{ "nloc": N, "ccn": N, "location": "..." }] }
+  },
+  "efficiency": { "radon": { "grade": "A-F", "avg_cc": N } },
+  "artifacts": { "arch": [...], "logic": [...], "efficiency": [...] }
 }
-user -> service.api: requests
-service.api -> service.db: queries
-EOF
-d2 arch.d2 arch.svg
 ```
 
-## Tool Mapping by Language
+## Hard Rules for Agents
 
-| Language | Arch | Logic | Efficiency |
-|----------|------|-------|------------|
-| Python | pydeps, scc | semgrep, lizard | py-spy, memray, radon |
-| JavaScript/TS | madge, depcruise, scc | semgrep, jscpd, ast-grep | speedscope (chrome profiles) |
-| Java | jQAssistant, ArchUnit | CodeQL, Infer, Semgrep | async-profiler, jvisualvm |
-| C/C++ | Joern, CodeQL | Infer, CodeQL, Semgrep | perf, FlameGraph, valgrind |
-| Go | scc, tokei | semgrep, ast-grep | pprof, speedscope |
-| Rust | scc, tokei | semgrep | flamescope, cargo-flamegraph |
+- **Always run via the suite CLI**, never manually invoke the wrapped tools (you'll miss the indexing).
+- **Use `--parallel`** unless logs need to be readable in real time.
+- **Read `report.json` first**, only fall back to per-tool raw outputs when you need detail.
+- **Skip-if-missing is the default** — a missing tool prints a `⚠️` and continues; never abort.
+- **DeepSeek key lives in** `/home/l/code_analysis_suite/.env` (gitignored). Don't ask the user to re-paste it.
+- **For "how should I implement X?" questions**, prefer `recommend` over reading every repo by hand.
+- **For "port this function" questions**, use `extract` to get a self-contained slice.
 
-## Output Artifacts
+## When NOT to use this skill
 
-A full investigation produces:
+- Live debugging of a running service → use the runtime trio (shell + LSP + tail logs) instead.
+- Editing the user's own code → use the language-specific batch-check CLIs (tsc / gopls / pyright / shellcheck).
+- Reading docs of a published library → just `pip show` / `npm view` / web search.
 
-```
-investigation-report/
-├── 01-arch/
-│   ├── scc-report.json
-│   ├── dependency-graph.svg
-│   └── architecture.d2
-├── 02-logic/
-│   ├── semgrep-findings.sarif
-│   ├── jscpd-report.json
-│   ├── lizard-complexity.xml
-│   └── infer-report.json
-├── 03-efficiency/
-│   ├── py-spy-profile.svg
-│   ├── memray-flamegraph.html
-│   └── radon-report.txt
-└── SUMMARY.md
-```
-
-## Tips
-
-- **Start with `scc`** — 1 second tells you language mix, scale, rough complexity
-- **Use `semgrep --config=auto`** — zero-config security scan
-- **`speedscope`** accepts profiles from Chrome, Firefox, Node.js, Python, Go, Java, Rust, etc.
-- **`joern`** is powerful but has a learning curve; start with `joern-scan --list-query-names`
-- For **quick triage**, always run: `scc + semgrep + lizard`
+This skill shines on **cloned OSS repos that need to be reverse-engineered**, not on freshly written code.

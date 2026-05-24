@@ -1,236 +1,176 @@
-# Code Analysis Suite
+<div align="center">
 
-> **这是一个面向 AI Agent 的"开源仓库解剖工具箱"。**
-> 用法：克隆任意一个想研究的开源仓库 → 在任何 MCP-capable / shell-capable 的 agent
-> （Claude Code / Codex / Copilot CLI / Cursor / Gemini CLI / Windsurf / Hermes / Aider …）
-> 里指向这个 suite → Agent 会自动调用本仓库内 29 个静态分析工具，把目标仓库的
-> **架构、业务逻辑、代码质量**全部扒出来，输出结构化材料供你借鉴、学习、引用。
+# 🔬 Code Analysis Suite
 
-**不是给人手动跑的 CLI**，而是给 agent 当"侦察兵"——你只负责选目标，让 agent 跑工具读结果。
+**The agent-facing toolkit for dissecting open-source repositories.**
 
-> 🤖 Agent 来源不限：所有支持 MCP 或 shell 的 AI 编码助手都能用。
-> 完整通用契约见 [AGENTS.md](./AGENTS.md)，CLI / MCP 工具清单见 `repo-inv manifest`。
+*One command — `repo-inv analyze <path>` — drives 29 best-in-class static analyzers,
+indexes the result into a cross-repo knowledge base, and lets your AI coding agent
+"mix-and-match copy" architecture from the best of OSS.*
+
+[![Node](https://img.shields.io/badge/node-%E2%89%A518-339933?logo=node.js&logoColor=white)](#installation)
+[![MCP](https://img.shields.io/badge/MCP-stdio-blue)](#mcp-integration)
+[![Agents](https://img.shields.io/badge/agents-Claude%20Code%20%7C%20Codex%20%7C%20Copilot%20%7C%20Cursor%20%7C%20Gemini%20%7C%20Windsurf-orange)](docs/MCP.md)
+[![Tools](https://img.shields.io/badge/wrapped%20tools-29-success)](docs/USAGE.md#wrapped-tools)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
+[Quick Start](#-quick-start) ·
+[How it works](#-how-it-works) ·
+[Architecture](docs/ARCHITECTURE.md) ·
+[MCP setup](docs/MCP.md) ·
+[中文文档](docs/zh/README.md)
+
+</div>
 
 ---
 
-## 一次性安装
+## ✨ Why this exists
+
+Modern AI coding agents are great at writing code, but **bad at reading large unfamiliar
+codebases**. When you clone an OSS repo and ask Claude / Codex / Copilot to "understand
+this and borrow the good parts", the agent typically falls into one of two failure modes:
+
+1. **Greps blindly** — burns context tokens reading random files.
+2. **Hallucinates structure** — invents class hierarchies that don't exist.
+
+`code_analysis_suite` fixes both: it gives every agent a single, deterministic, tool-driven
+investigation pipeline, plus a persistent SQLite index of everything it has ever seen — so
+the next question gets a richer answer, not a fresh blind grep.
+
+## 🚀 Quick Start
 
 ```bash
-git clone <this-suite> && cd <suite>
-npm install
-sudo npm link        # 暴露 `repo-inv` 和 `repo-inv-mcp` 到 PATH
+# 1. One-time install
+git clone https://github.com/<you>/code_analysis_suite
+cd code_analysis_suite && npm install && sudo npm link
+
+# 2. (Optional) register the MCP server with your agent
+repo-inv install-mcp claude-code     # or: copilot / cursor / codex / gemini / windsurf
+
+# 3. Analyze any repository
+repo-inv analyze /path/to/some-cloned-oss-repo --parallel
+
+# 4. Cross-repo brain (after you've analyzed a few)
+repo-inv list --by quality
+repo-inv search "retry OR backoff"
+repo-inv compare repo-fastapi repo-litestar
+repo-inv recommend "I need a plugin system with hot-reload"
 ```
 
-## 给 Agent 的使用入口（必读）
+Output lands in `~/.cache/repo-inv/<repo>-<ts>/` and the cross-repo index is at
+`~/.cache/repo-inv/index.db` (SQLite + FTS5). The target repo is **never modified**.
 
-Agent 接到"分析这个开源仓库"类任务时，**第一步必须用这个 suite**，不要直接 grep 目标仓库。
+## 🧠 How it works
 
-### 三层扫描（默认全跑）
-
-```bash
-# Node.js CLI（唯一引擎，安装后全局可用）
-repo-inv analyze <target-repo>
-
-# 并行模式（三层同时跑，~3x 速度，日志会交织）
-repo-inv analyze <target-repo> --parallel
-
-# bash 兼容入口（已退化为 Node CLI 的薄包装，不再独立维护）
-bash .agents/skills/repo-investigator/scripts/analyze.sh <target-repo>
+```mermaid
+flowchart LR
+    A[Cloned OSS repo] --> B[repo-inv analyze]
+    B --> C1[01-arch<br/>scc · tokei · madge<br/>pydeps · pyan3 · code2flow]
+    B --> C2[02-logic<br/>semgrep · lizard · jscpd<br/>vulture · bandit · gosec · mypy]
+    B --> C3[03-efficiency<br/>radon · wily · py-spy · memray]
+    C1 --> D[report.json<br/>SUMMARY.md]
+    C2 --> D
+    C3 --> D
+    D --> E[(SQLite index<br/>~/.cache/repo-inv/index.db)]
+    E --> F1[repo-inv list/search/compare]
+    E --> F2[repo-inv recommend<br/>LLM-driven]
+    E --> F3[MCP server<br/>9 tools]
+    F3 --> G[Claude Code · Codex · Copilot<br/>Cursor · Gemini · Windsurf]
 ```
 
-输出目录默认 `~/.cache/repo-inv/<repo>-<timestamp>/`（不会污染目标仓库），分三层：
+Three layers, one report:
 
-| 目录 | 关注 | 给 agent 的解读建议 |
+| Layer | Question it answers | Key tools |
 |---|---|---|
-| `01-arch/` | 模块结构、依赖图、语言构成、代码量 | 看 `scc.json` 定规模 → `pydeps.svg` / `madge-*` 定模块边界 → `code2flow.gv` / `pyan3-callgraph.dot` 定调用链 |
-| `02-logic/` | 安全规则、重复代码、圈复杂度、类型问题、死代码 | `lizard.txt` top-10 是热点 → `semgrep.json` 是风险 → `vulture.txt` / `jscpd` 是可删/可重构面 |
-| `03-efficiency/` | 性能、复杂度趋势、内存 | `radon-cc.txt` / `wily.txt` 看演化，py-spy/memray 需可运行场景 |
+| **🏗️ Architecture** | *What modules exist, how do they depend on each other?* | scc, tokei, pydeps, madge, dependency-cruiser, code2flow, pyan3 |
+| **🧠 Business logic** | *Where is the complexity, the duplication, the security risk?* | semgrep, lizard, jscpd, vulture, bandit, gosec, pyright, mypy |
+| **⚡ Efficiency** | *How does complexity evolve, where's the hot path?* | radon, wily, py-spy, memray |
 
-最终 `SUMMARY.md`（人读）+ `report.json`（机器读，agent 友好）在输出根目录。
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full pipeline diagram and the
+[knowledge-base schema](docs/ARCHITECTURE.md#knowledge-base-schema).
 
-### 推荐工作流（agent 拿到一个新仓库时）
+## 📦 Installation
 
-1. **`node bin/repo-inv tools`** — 先看本机哪些工具可用（缺的会跳过，不会报错）
-2. **`node bin/repo-inv analyze <target> --parallel`** — 三层并行跑全量（~3x 速度），结束后自动入库到 `~/.cache/repo-inv/index.db`
-3. **读 `report.json`**（agent 主入口）+ `SUMMARY.md`（人读视图）—— 形成第一印象
-4. **`node bin/repo-inv learn`** — 让 DeepSeek 综合 report.json + SUMMARY 输出"学习指南"（架构速读 / 业务核心 / 质量画像 / 可借鉴点 / 风险盲区），结果存为 `LEARNINGS.md` 并刷新到索引库
-5. **结合 code-review-graph MCP**（`semantic_search_nodes` / `query_graph` / `get_architecture_overview`）做交叉验证
-6. **挑 `lizard` top-10 复杂函数 + 调用图入口** —— 这两个加起来就是"业务逻辑骨架"
-7. **把 `semgrep.json` + `bandit.json` + `vulture.txt` + `jscpd` 当成"质量画像"** 输出给用户
-
-### 跨仓库知识库（Sprint 1 新增）
-
-每次 `analyze` 都会自动落到 SQLite 索引（`~/.cache/repo-inv/index.db`），随后可跨仓库检索、对比、排序——这是"抄作业要排列组合地抄"的基础：
+**Prerequisites:** Node ≥18, Python ≥3.10. Optional analyzers (Go, Rust, Java) are
+auto-skipped if missing — `repo-inv tools` shows what's available on your machine.
 
 ```bash
-# 列出所有已索引仓库（按 recent/size/quality/complexity 排序）
-node bin/repo-inv list --by quality
-
-# 全文搜索 LEARNINGS.md + SUMMARY.md（FTS5 语法，支持 OR / "短语" / -排除 / 前缀*）
-node bin/repo-inv search "async OR await OR coroutine" --lang python --max-ccn 30
-
-# 两个仓库并排对比：语言分布 / 复杂度 / 安全 / 重复率 / hotspot
-node bin/repo-inv compare repo-fastapi repo-crewai
+git clone https://github.com/<you>/code_analysis_suite
+cd code_analysis_suite
+npm install
+sudo npm link             # exposes `repo-inv` and `repo-inv-mcp` globally
+pip install -r requirements.txt   # optional Python analyzers
+repo-inv tools                    # see what's installed
 ```
 
-`compare` 输出会自动标记每个指标"A better / B better"，帮你判断哪个项目在某个维度更值得抄。
-
-### 模式索引 + 代码移植 + AI 推荐（Sprint 2 新增）
-
-把"抄作业"从"复制粘贴"升级成"排列组合地抄"：
+For LLM-powered subcommands (`learn`, `recommend`), add a `.env` in the suite root:
 
 ```bash
-# 1) 模式扫描：用 rules/patterns.yml 里的 20 条精选规则识别 retry/DI/中间件/缓存/插件/状态机/builder 等
-node bin/repo-inv patterns /tmp/repo-fastapi
-# → 自动写入 patterns 表，supply `recommend` 的弹药
-
-# 2) 代码移植：把某个文件 + 它的 1-hop 内部 import 拆出来，外加 pip 依赖清单
-node bin/repo-inv extract /tmp/repo-fastapi fastapi/encoders.py --out ./vendor/encoder --max-hops 2
-# → 输出 EXTRACT.json 含 files/external_deps/stdlib_deps
-
-# 3) AI 排列组合：给 DeepSeek 一段任务描述 + 所有已索引仓库的目录，让它推荐
-#    "抄哪个仓库的哪个 pattern 的哪个文件，避开哪些 hotspot"
-node bin/repo-inv recommend "我要给 LLM agent 框架加上带重试和限流的 HTTP 调用层"
-# → 输出 5 段：首选仓库 / 核心可抄代码 / 可抄架构模式 / 风险陷阱 / 行动清单（含真实 repo-inv 命令）
+DEEPSEEK_API_KEY=sk-...
+# OPENAI_API_KEY=sk-...        # (planned)
+# ANTHROPIC_API_KEY=sk-ant-... # (planned)
 ```
 
-模式规则可自定义：编辑 `rules/patterns.yml`（semgrep 语法），或用 `--rules <path>` 指定其他规则集。
+## 🔌 MCP integration
 
-### MCP server + 多 Agent 注册（Sprint 3 / 4）
+`repo-inv install-mcp <host>` registers an idempotent stdio MCP server with any of:
 
-让 agent 不用 shell 出去——直接通过 MCP 调用所有能力。
-
-**一条命令注册到任意 host**（idempotent，自动备份 `.bak`）：
-
-```bash
-repo-inv install-mcp                    # 列出所有支持的 host
-repo-inv install-mcp <host>             # 注册到指定 host
-repo-inv install-mcp --all              # 注册到所有已存在配置文件的 host
-repo-inv install-mcp <host> --dry-run   # 预览将要写入的内容
-```
-
-| Host | 写入文件 |
+| Host | Config touched |
 |---|---|
 | `copilot` | `~/.copilot/mcp-config.json` |
 | `cursor` | `~/.cursor/mcp.json` |
 | `gemini` | `~/.gemini/settings.json` |
-| `codex` | `~/.codex/config.toml`（TOML block） |
+| `codex` | `~/.codex/config.toml` |
 | `windsurf` | `~/.codeium/windsurf/mcp_config.json` |
 | `claude-desktop` | `~/.config/claude/claude_desktop_config.json` |
-| `claude-code` | 输出 `claude mcp add` 命令给你跑 |
-| `hermes` | 输出通用 stdio JSON 供手工映射 |
+| `claude-code` | wraps `claude mcp add` |
+| `hermes` | prints a generic stdio template |
 
-**MCP 暴露的 9 个工具：**
+Each write is backed up to `<file>.bak`. Use `--dry-run` to preview, `--all` for
+every host whose config already exists. Full details: [docs/MCP.md](docs/MCP.md).
 
-| 工具 | 用途 |
-|---|---|
-| `list_repos` | 列已索引仓库（order_by: recent/size/quality/complexity） |
-| `search_knowledge` | FTS5 搜 LEARNINGS+SUMMARY，可按 lang/max_ccn 过滤 |
-| `compare_repos` | 两个仓库的指标 / 语言 / hotspot diff |
-| `get_repo_details` | 取某仓库完整记录（含 languages/hotspots/patterns） |
-| `patterns_of_repo` | 某仓库检测到的架构模式列表 |
-| `repos_with_pattern` | 反查：哪些仓库用了某模式 |
-| `extract_code` | 把文件+1-hop import 拆出来，返回 manifest |
-| `analyze_repo` | 跑一次新分析并入库（长耗时） |
-| `recommend` | DeepSeek 推荐"抄哪个仓库的哪个文件" |
+The server exposes **9 tools**: `list_repos`, `search_knowledge`, `compare_repos`,
+`get_repo_details`, `patterns_of_repo`, `repos_with_pattern`, `extract_code`,
+`analyze_repo`, `recommend`.
 
-**Skill 自动发现**：`.agents/skills/repo-investigator/SKILL.md` 已通过 `~/.copilot/skills/repo-investigator` 软链注册，新会话开局即可被 agent 识别使用。
+## 🗺️ Documentation
 
-### 单工具补救
+- **[Architecture](docs/ARCHITECTURE.md)** — pipeline, data flow, SQLite schema
+- **[Usage examples](docs/USAGE.md)** — end-to-end walkthroughs of all 12 subcommands
+- **[MCP integration](docs/MCP.md)** — per-agent setup, tool reference
+- **[Agent contract](AGENTS.md)** — vendor-neutral conventions agents should follow
+- **[Contributing](CONTRIBUTING.md)** — add a new analyzer, add a new pattern rule
+- **[中文文档](docs/zh/README.md)** — original Chinese README
 
-如果某层的关键工具在目标机器缺失，agent 应主动安装而不是绕开：
+## 🎯 Example output
 
 ```bash
-node bin/repo-inv tool <name>     # 看安装提示
-# 例：pip install vulture / brew install scc / npm i -g madge
+$ repo-inv analyze ~/projects/fastapi --parallel
+🚀 Running 3 layers in parallel...
+  → 01-arch    scc · tokei · madge · pydeps   ✓ (12s)
+  → 02-logic   semgrep · lizard · jscpd · vulture · bandit · mypy   ✓ (54s)
+  → 03-efficiency  radon · wily   ✓ (8s)
+📝 Summary: ~/.cache/repo-inv/fastapi-20260524-1830/SUMMARY.md
+📊 Machine report: ~/.cache/repo-inv/fastapi-20260524-1830/report.json
+   Indexed as #7 in ~/.cache/repo-inv/index.db
+
+$ repo-inv recommend "add a retry+ratelimit HTTP layer to my agent"
+🤖 DeepSeek recommends:
+  1. Primary: tenacity (already indexed) — pure Python retry, exponential backoff
+  2. Pattern to borrow: fastapi/Middleware (file: fastapi/middleware/cors.py)
+  3. Avoid hotspot: requests_cache/backends/sqlite.py (CCN 67, fragile)
+  4. Action: repo-inv extract ~/projects/tenacity tenacity/_utils.py --out ./vendor
 ```
 
----
+## 🤝 Contributing
 
-## 工具清单（按层）
+PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Particularly looking for:
 
-### 01 Architecture — "这个仓库长什么样"
-| 工具 | 干什么 |
-|---|---|
-| `scc` / `tokei` | 极速代码统计，定项目规模与语言构成 |
-| `pydeps` | Python 模块依赖 SVG（自动检测包名） |
-| `madge` / `depcruise` | JS/TS 模块依赖图 + 循环检测 |
-| `code2flow` / `pyan3` | Python/JS 调用流程图（→ Graphviz dot） |
-| `ast-grep` | AST 模式搜索 |
-| `staticcheck` / `golangci-lint` | Go 静态分析 |
-| `d2` / `joern` / `codeql` | 标记为 `manual`，需交互式/重型环境，不参与自动 analyze |
+- New analyzer integrations (one entry in `lib/tools.js` + a runner section)
+- New semgrep pattern rules in `rules/patterns.yml`
+- LLM provider abstraction (currently DeepSeek-only for `learn`/`recommend`)
+- More MCP host adapters in `install-mcp`
 
-### 02 Logic — "代码质量与风险"
-| 工具 | 干什么 |
-|---|---|
-| `semgrep` | 多语言 SAST，规则即代码（含 `--config=auto`） |
-| `lizard` | 多语言圈复杂度（CCN > 15 关注，> 50 必重构） |
-| `jscpd` | 跨语言重复代码检测 |
-| `pyright` | Python 静态类型检查 |
-| `mypy` | Python 类型检查参考实现（与 pyright 双确认） |
-| `bandit` | Python 安全扫描（OWASP，semgrep 补盲） |
-| `vulture` | Python 死代码检测 |
-| `gosec` | Go 安全扫描（hardcoded creds / SQL 注入 / 弱 RNG） |
+## 📜 License
 
-### 03 Efficiency — "性能与演化"
-| 工具 | 干什么 |
-|---|---|
-| `radon` | Python 圈复杂度 / 可维护性 |
-| `wily` | Python 复杂度随 git 演化 |
-| `py-spy` / `memray` | 运行时性能/内存采样（需可运行的入口） |
-
-完整每工具用法见 **`.agents/skills/repo-investigator/docs/TOOLS_GUIDE.md`**。
-
----
-
-## 系统依赖（必装）
-
-工具链本身用 npm/pip 装即可，但有一个**系统级依赖**容易漏：
-
-```bash
-# graphviz —— pydeps / code2flow / pyan3 生成 SVG/DOT 时硬依赖
-sudo apt install -y graphviz       # Debian/Ubuntu
-brew install graphviz              # macOS
-```
-
-不装 graphviz 不会报错，但 `pydeps.svg` 会静默缺失。`repo-inv tools` 不检测它（它是间接依赖）。
-
-### LLM 配置（用 `repo-inv learn` 时需要）
-
-在仓库根目录创建 `.env`（已 gitignore）：
-
-```bash
-DEEPSEEK_API_KEY=sk-...
-DEEPSEEK_BASE_URL=https://api.deepseek.com
-DEEPSEEK_MODEL=deepseek-chat
-```
-
-`repo-inv learn` 会读取 `.env` 或环境变量，把 `report.json + SUMMARY.md` 喂给 DeepSeek，产出 `LEARNINGS.md`。
-
----
-
-## 仓库自身结构
-
-| 路径 | 作用 |
-|---|---|
-| `bin/repo-inv` | commander CLI，5 个子命令（`analyze` / `tools` / `tool` / `report` / `init`） |
-| `lib/tools.js` | **工具元数据唯一来源**（注册表 + 检测命令 + 示例 + tips） |
-| `lib/runner.js` | **三层执行引擎（唯一）**，`hasCommand` 探测 → `spawn` 调用 → 写文件 → `generateSummary` 汇总 |
-| `.agents/skills/repo-investigator/` | Skill 元数据 + `analyze.sh`（Node CLI 的薄包装兼容入口）+ per-tool 中文 docs |
-| `.github/copilot-instructions.md` | Copilot agent 进入本仓库后的工作约定 |
-| `CLAUDE.md` / `CLAUDE_CODE_GUIDE.md` | Claude Code agent 的工作约定与命令参考 |
-| `COPILOT_USAGE_GUIDE.md` | Copilot CLI 全命令 / Skills / 工具速查 |
-
-> **代码改动约定**：加新工具只需两处同步——`lib/tools.js` 注册表 + `lib/runner.js` 对应 `run*` 函数。`analyze.sh` 是 Node CLI 的薄包装，无需改动。
-
----
-
-## Agent 行为规则（重要）
-
-1. **不要绕过 suite 直接 grep 目标仓库** —— 浪费 token，且会漏掉调用图/复杂度等结构化信息。
-2. **不存在的工具 silently skip 是设计** —— 不要尝试"修复"，缺工具就提示用户安装。
-3. **跑完务必读 `SUMMARY.md`** —— 它是工具产物的人读切片，里面已经把关键指标摘出来了。
-4. **目标仓库为 Python 项目**：优先看 `pydeps.svg + pyan3-callgraph.dot + lizard + vulture + pyright`。
-5. **目标仓库为 JS/TS**：优先看 `madge-circular.txt + depcruise.dot + jscpd + semgrep`。
-6. **目标仓库为 Go**：优先看 `scc + staticcheck.json + golangci-lint.json + semgrep`。
-7. **任何时候都可调** `code-review-graph` MCP 工具（`semantic_search_nodes` / `detect_changes` / `get_impact_radius`）做语义层验证——见 `CLAUDE.md` 顶部说明。
+[MIT](LICENSE) — © 2026 code_analysis_suite contributors

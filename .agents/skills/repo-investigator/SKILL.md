@@ -1,16 +1,19 @@
 ---
 name: repo-investigator
 description: |
-  Full-stack open-source repository investigation toolkit. Run as `node /home/l/code_analysis_suite/bin/repo-inv <cmd>`.
-  Three-layer analysis (architecture / business logic / quality) + cross-repo SQLite knowledge base
-  + architectural pattern detection + code extraction + AI-powered "mix-and-match copy-from-OSS"
-  recommendations. Wraps 29 best-in-class static analysis tools (semgrep / lizard / pyright / mypy /
-  bandit / gosec / vulture / jscpd / scc / madge / pydeps / radon / wily / py-spy / memray / ...).
+  Full-stack open-source repository investigation toolkit. After installation (`npm link` once)
+  it's invoked as the global command `repo-inv`. Three-layer analysis (architecture / business
+  logic / quality) + cross-repo SQLite knowledge base + architectural pattern detection + code
+  extraction + AI-powered "mix-and-match copy-from-OSS" recommendations. Wraps 29 best-in-class
+  static analysis tools (semgrep / lizard / pyright / mypy / bandit / gosec / vulture / jscpd /
+  scc / madge / pydeps / radon / wily / py-spy / memray / ...). Also ships an MCP server
+  (`repo-inv-mcp`) so any MCP-capable agent (Claude Code / Cursor / Codex / Gemini CLI /
+  Copilot CLI / Windsurf / Hermes) gets the same surface without shelling out.
 metadata:
   short-description: Analyze any cloned repo across 3 layers, index it, then mix-and-match-copy
   author: code_analysis_suite
-  version: 2.0.0
-  cli-prefix: node /home/l/code_analysis_suite/bin/repo-inv
+  version: 2.1.0
+  cli-prefix: repo-inv
 ---
 
 # Repo Investigator
@@ -20,35 +23,41 @@ this is the toolkit. It does three things in one CLI:
 
 1. **Per-repo investigation** — 3 layers (arch / logic / efficiency) → `report.json` + `SUMMARY.md` + `LEARNINGS.md`
 2. **Cross-repo knowledge base** — every analyzed repo is auto-indexed into `~/.cache/repo-inv/index.db` (SQLite + FTS5)
-3. **Mix-and-match copy** — detect patterns, extract code with deps, and ask DeepSeek which repo's solution to borrow for a given task
+3. **Mix-and-match copy** — detect patterns, extract code with deps, and ask the LLM which repo's solution to borrow for a given task
 
 ## Default Workflow (use this verbatim when a user gives you a cloned repo)
 
 ```bash
-CLI=node /home/l/code_analysis_suite/bin/repo-inv
+# (One-time per machine) make `repo-inv` global:
+cd <suite-root> && npm install && sudo npm link
+# (One-time per agent) register the MCP server:
+repo-inv install-mcp <copilot|cursor|gemini|codex|claude-code|windsurf|claude-desktop|hermes>
 
 # 0. Confirm tool inventory (skip-if-missing is automatic — never errors)
-$CLI tools
+repo-inv tools
 
 # 1. Full investigation — parallel runs ~3x faster, auto-indexes into knowledge base
-$CLI analyze /path/to/cloned/repo --parallel
+repo-inv analyze /path/to/cloned/repo --parallel
 
 # 2. Read the agent-facing report
 cat ~/.cache/repo-inv/<repo-name>-<ts>/report.json   # structured (use this first!)
 cat ~/.cache/repo-inv/<repo-name>-<ts>/SUMMARY.md    # human-readable
 
-# 3. Get a synthesized learning brief (uses DeepSeek via .env)
-$CLI learn
+# 3. Get a synthesized learning brief (uses DeepSeek via .env in suite root)
+repo-inv learn
 
 # 4. Tag the repo with architectural patterns (writes into the index too)
-$CLI patterns /path/to/cloned/repo
+repo-inv patterns /path/to/cloned/repo
 
 # 5. When the user asks "how would I do X?", consult the cross-repo brain:
-$CLI list --by quality                    # what's in the library
-$CLI search "retry OR backoff"            # FTS5 over learnings + summaries
-$CLI compare repo-a repo-b                # side-by-side diff
-$CLI recommend "build feature X"          # DeepSeek picks best repos to copy from
-$CLI extract /path/repo file.py --out ./vendor/x   # transplant code with imports
+repo-inv list --by quality                    # what's in the library
+repo-inv search "retry OR backoff"            # FTS5 over learnings + summaries
+repo-inv compare repo-a repo-b                # side-by-side diff
+repo-inv recommend "build feature X"          # DeepSeek picks best repos to copy from
+repo-inv extract /path/repo file.py --out ./vendor/x   # transplant code with imports
+
+# Discoverability: get machine-readable inventory of every subcommand
+repo-inv manifest        # JSON: commands / flags / paths / report schema
 ```
 
 ## Subcommand Reference
@@ -93,7 +102,7 @@ Every `analyze` auto-upserts into `~/.cache/repo-inv/index.db`:
 - **arch**: middleware, state_machine, events, singleton, builder
 - **testing**: pytest_fixture, hypothesis
 
-Add custom rules: edit `/home/l/code_analysis_suite/rules/patterns.yml` (standard semgrep syntax),
+Add custom rules: edit `<suite-root>/rules/patterns.yml` (standard semgrep syntax),
 or pass `--rules <other.yml>` to override.
 
 ## report.json Schema (`repo-inv/report@1`)
@@ -131,7 +140,7 @@ Agent-friendly aggregator. Key fields:
 - **Use `--parallel`** unless logs need to be readable in real time.
 - **Read `report.json` first**, only fall back to per-tool raw outputs when you need detail.
 - **Skip-if-missing is the default** — a missing tool prints a `⚠️` and continues; never abort.
-- **DeepSeek key lives in** `/home/l/code_analysis_suite/.env` (gitignored). Don't ask the user to re-paste it.
+- **DeepSeek key lives in** `<suite-root>/.env` (gitignored). Don't ask the user to re-paste it.
 - **For "how should I implement X?" questions**, prefer `recommend` over reading every repo by hand.
 - **For "port this function" questions**, use `extract` to get a self-contained slice.
 

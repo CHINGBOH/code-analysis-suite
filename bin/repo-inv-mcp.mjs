@@ -12,8 +12,9 @@
 //   - analyze_repo        : run a fresh analyze and index it
 //   - recommend           : DeepSeek-powered "which repo to copy from for task X"
 //
-// Wire into Claude Code / any MCP client by adding to its mcp config:
-//   { "mcpServers": { "repo-inv": { "command": "node", "args": ["/home/l/code_analysis_suite/bin/repo-inv-mcp"] } } }
+// Wire into any MCP client (Claude Code / Cursor / Codex / Gemini / Copilot)
+// by running once:  repo-inv install-mcp <host>
+// or copy the stdio entry printed by:  repo-inv install-mcp hermes
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';

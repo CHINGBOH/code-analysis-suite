@@ -4,7 +4,8 @@
   "description": "",
   "main": "index.js",
   "bin": {
-    "repo-inv": "./bin/repo-inv"
+    "repo-inv": "./bin/repo-inv",
+    "repo-inv-mcp": "./bin/repo-inv-mcp.mjs"
   },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"

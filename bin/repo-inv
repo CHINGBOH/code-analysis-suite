@@ -655,4 +655,193 @@ ${JSON.stringify(compactCatalog, null, 2)}
     }
   });
 
+// ── manifest ───────────────────────────────────────────────────────────────
+// Machine-readable inventory of every subcommand, for agents that want to
+// discover capabilities without parsing SKILL.md.
+program
+  .command('manifest')
+  .description('Print machine-readable JSON manifest of every subcommand')
+  .action(() => {
+    const cmds = program.commands
+      .filter(c => c.name() !== 'manifest' && c.name() !== 'install-mcp')
+      .map(c => ({
+        name: c.name(),
+        description: c.description(),
+        args: c._args.map(a => ({ name: a._name, required: a.required })),
+        options: c.options.map(o => ({
+          flags: o.flags,
+          description: o.description,
+          default: o.defaultValue,
+        })),
+      }));
+    console.log(JSON.stringify({
+      name: 'repo-inv',
+      version: program.version(),
+      cli_path: path.resolve(__dirname, 'repo-inv'),
+      mcp_path: path.resolve(__dirname, 'repo-inv-mcp.mjs'),
+      suite_root: path.resolve(__dirname, '..'),
+      knowledge_db: path.join(os.homedir(), '.cache', 'repo-inv', 'index.db'),
+      default_output_root: DEFAULT_OUT_ROOT,
+      report_schema: 'repo-inv/report@1',
+      commands: cmds,
+    }, null, 2));
+  });
+
+// ── install-mcp ────────────────────────────────────────────────────────────
+// Register this suite's MCP server with a given agent host. Idempotent.
+function mcpJsonPath() {
+  return path.resolve(__dirname, 'repo-inv-mcp.mjs');
+}
+
+function suiteRoot() {
+  return path.resolve(__dirname, '..');
+}
+
+function buildMcpEntry() {
+  return {
+    command: 'node',
+    args: [mcpJsonPath()],
+    cwd: suiteRoot(),
+    type: 'stdio',
+  };
+}
+
+function upsertJsonMcp(file, topKey, entryKey, dryRun) {
+  const dir = path.dirname(file);
+  fs.mkdirSync(dir, { recursive: true });
+  let cfg = {};
+  if (fs.existsSync(file)) {
+    try { cfg = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { cfg = {}; }
+  }
+  cfg[topKey] = cfg[topKey] || {};
+  cfg[topKey][entryKey] = buildMcpEntry();
+  if (dryRun) {
+    console.log(`# Would write to ${file}:`);
+    console.log(JSON.stringify(cfg, null, 2));
+    return;
+  }
+  if (fs.existsSync(file)) {
+    fs.copyFileSync(file, file + '.bak');
+  }
+  fs.writeFileSync(file, JSON.stringify(cfg, null, 2));
+  console.log(chalk.green(`✅ Wrote ${file} (backup: ${file}.bak)`));
+}
+
+function upsertCodexToml(file, dryRun) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const marker = '[mcp_servers.repo-inv]';
+  const block =
+    `${marker}\n` +
+    `command = "node"\n` +
+    `args = ["${mcpJsonPath()}"]\n` +
+    `cwd = "${suiteRoot()}"\n`;
+  let existing = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+  let next;
+  if (existing.includes(marker)) {
+    // Replace the existing block (marker through next [section] or EOF)
+    next = existing.replace(
+      new RegExp(`\\[mcp_servers\\.repo-inv\\][\\s\\S]*?(?=\\n\\[|$)`, 'm'),
+      block.trimEnd()
+    );
+  } else {
+    next = existing.trimEnd() + (existing.trim() ? '\n\n' : '') + block;
+  }
+  if (dryRun) {
+    console.log(`# Would write to ${file}:`);
+    console.log(next);
+    return;
+  }
+  if (fs.existsSync(file)) fs.copyFileSync(file, file + '.bak');
+  fs.writeFileSync(file, next);
+  console.log(chalk.green(`✅ Updated ${file} (backup: ${file}.bak)`));
+}
+
+const MCP_HOSTS = {
+  copilot: {
+    label: 'GitHub Copilot CLI',
+    file: path.join(os.homedir(), '.copilot', 'mcp-config.json'),
+    apply: (dry) => upsertJsonMcp(path.join(os.homedir(), '.copilot', 'mcp-config.json'), 'servers', 'repo-inv', dry),
+  },
+  cursor: {
+    label: 'Cursor',
+    file: path.join(os.homedir(), '.cursor', 'mcp.json'),
+    apply: (dry) => upsertJsonMcp(path.join(os.homedir(), '.cursor', 'mcp.json'), 'mcpServers', 'repo-inv', dry),
+  },
+  gemini: {
+    label: 'Gemini CLI',
+    file: path.join(os.homedir(), '.gemini', 'settings.json'),
+    apply: (dry) => upsertJsonMcp(path.join(os.homedir(), '.gemini', 'settings.json'), 'mcpServers', 'repo-inv', dry),
+  },
+  codex: {
+    label: 'OpenAI Codex CLI',
+    file: path.join(os.homedir(), '.codex', 'config.toml'),
+    apply: (dry) => upsertCodexToml(path.join(os.homedir(), '.codex', 'config.toml'), dry),
+  },
+  windsurf: {
+    label: 'Windsurf / Codeium',
+    file: path.join(os.homedir(), '.codeium', 'windsurf', 'mcp_config.json'),
+    apply: (dry) => upsertJsonMcp(path.join(os.homedir(), '.codeium', 'windsurf', 'mcp_config.json'), 'mcpServers', 'repo-inv', dry),
+  },
+  'claude-desktop': {
+    label: 'Claude Desktop',
+    file: path.join(os.homedir(), '.config', 'claude', 'claude_desktop_config.json'),
+    apply: (dry) => upsertJsonMcp(path.join(os.homedir(), '.config', 'claude', 'claude_desktop_config.json'), 'mcpServers', 'repo-inv', dry),
+  },
+  'claude-code': {
+    label: 'Claude Code (use the `claude mcp add` CLI)',
+    file: null,
+    apply: (dry) => {
+      const cmd = `claude mcp add repo-inv -- node ${mcpJsonPath()}`;
+      console.log(chalk.yellow('ℹ️  Claude Code does not write a flat JSON file. Run this once:'));
+      console.log('  ' + chalk.cyan(cmd));
+      if (!dry) {
+        console.log(chalk.gray('  (or with --scope user / --scope project as needed)'));
+      }
+    },
+  },
+  hermes: {
+    label: 'Hermes (generic stdio template — user maps to their own loader)',
+    file: null,
+    apply: () => {
+      console.log(JSON.stringify({ 'repo-inv': buildMcpEntry() }, null, 2));
+    },
+  },
+};
+
+program
+  .command('install-mcp [host]')
+  .description('Register the repo-inv MCP server with an agent host (copilot/cursor/gemini/codex/claude-desktop/claude-code/windsurf/hermes). Omit host to list.')
+  .option('--all', 'Apply to every host whose config dir already exists')
+  .option('--dry-run', "Print what would be written instead of writing")
+  .action((host, opts) => {
+    if (!host && !opts.all) {
+      console.log(chalk.bold('Supported MCP hosts:'));
+      for (const [key, h] of Object.entries(MCP_HOSTS)) {
+        const fileMark = h.file ? (fs.existsSync(h.file) ? chalk.green('✓') : chalk.gray('·')) : ' ';
+        console.log(`  ${fileMark} ${chalk.cyan(key.padEnd(16))} ${h.label}`);
+      }
+      console.log(`\nRun ${chalk.cyan('repo-inv install-mcp <host>')} or ${chalk.cyan('repo-inv install-mcp --all')}.`);
+      return;
+    }
+    if (opts.all) {
+      for (const [key, h] of Object.entries(MCP_HOSTS)) {
+        if (h.file && !fs.existsSync(path.dirname(h.file))) {
+          console.log(chalk.gray(`· skip ${key} (config dir missing)`));
+          continue;
+        }
+        console.log(chalk.bold(`\n→ ${key} (${h.label})`));
+        try { h.apply(opts.dryRun); } catch (e) { console.error(chalk.red('  ' + e.message)); }
+      }
+      return;
+    }
+    const h = MCP_HOSTS[host];
+    if (!h) {
+      console.error(chalk.red(`Unknown host: ${host}`));
+      console.error('Known: ' + Object.keys(MCP_HOSTS).join(', '));
+      process.exit(1);
+    }
+    console.log(chalk.bold(`→ ${host} (${h.label})`));
+    h.apply(opts.dryRun);
+  });
+
 program.parse();

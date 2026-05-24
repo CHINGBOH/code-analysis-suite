@@ -1,13 +1,25 @@
 # Code Analysis Suite
 
 > **这是一个面向 AI Agent 的"开源仓库解剖工具箱"。**
-> 用法：克隆任意一个想研究的开源仓库 → 在 Claude Code / GitHub Copilot CLI 里指向这个 suite →
-> Agent 会自动调用本仓库内 20+ 个静态分析工具，把目标仓库的**架构、业务逻辑、代码质量**全部扒出来，
-> 输出结构化材料供你借鉴、学习、引用。
+> 用法：克隆任意一个想研究的开源仓库 → 在任何 MCP-capable / shell-capable 的 agent
+> （Claude Code / Codex / Copilot CLI / Cursor / Gemini CLI / Windsurf / Hermes / Aider …）
+> 里指向这个 suite → Agent 会自动调用本仓库内 29 个静态分析工具，把目标仓库的
+> **架构、业务逻辑、代码质量**全部扒出来，输出结构化材料供你借鉴、学习、引用。
 
 **不是给人手动跑的 CLI**，而是给 agent 当"侦察兵"——你只负责选目标，让 agent 跑工具读结果。
 
+> 🤖 Agent 来源不限：所有支持 MCP 或 shell 的 AI 编码助手都能用。
+> 完整通用契约见 [AGENTS.md](./AGENTS.md)，CLI / MCP 工具清单见 `repo-inv manifest`。
+
 ---
+
+## 一次性安装
+
+```bash
+git clone <this-suite> && cd <suite>
+npm install
+sudo npm link        # 暴露 `repo-inv` 和 `repo-inv-mcp` 到 PATH
+```
 
 ## 给 Agent 的使用入口（必读）
 
@@ -16,14 +28,14 @@ Agent 接到"分析这个开源仓库"类任务时，**第一步必须用这个 
 ### 三层扫描（默认全跑）
 
 ```bash
-# Node.js CLI（唯一引擎）
-node /home/l/code_analysis_suite/bin/repo-inv analyze <target-repo>
+# Node.js CLI（唯一引擎，安装后全局可用）
+repo-inv analyze <target-repo>
 
 # 并行模式（三层同时跑，~3x 速度，日志会交织）
-node /home/l/code_analysis_suite/bin/repo-inv analyze <target-repo> --parallel
+repo-inv analyze <target-repo> --parallel
 
 # bash 兼容入口（已退化为 Node CLI 的薄包装，不再独立维护）
-bash /home/l/code_analysis_suite/.agents/skills/repo-investigator/scripts/analyze.sh <target-repo>
+bash .agents/skills/repo-investigator/scripts/analyze.sh <target-repo>
 ```
 
 输出目录默认 `~/.cache/repo-inv/<repo>-<timestamp>/`（不会污染目标仓库），分三层：
@@ -84,26 +96,29 @@ node bin/repo-inv recommend "我要给 LLM agent 框架加上带重试和限流�
 
 模式规则可自定义：编辑 `rules/patterns.yml`（semgrep 语法），或用 `--rules <path>` 指定其他规则集。
 
-### MCP server + Skill 自动注册（Sprint 3 新增）
+### MCP server + 多 Agent 注册（Sprint 3 / 4）
 
 让 agent 不用 shell 出去——直接通过 MCP 调用所有能力。
 
-**给 Claude Code / Copilot CLI 注册：**
+**一条命令注册到任意 host**（idempotent，自动备份 `.bak`）：
 
-```jsonc
-// ~/.copilot/mcp-config.json （Copilot CLI）
-// 或 ~/.config/claude/claude_desktop_config.json （Claude Desktop）
-{
-  "servers": {
-    "repo-inv": {
-      "command": "node",
-      "args": ["/home/l/code_analysis_suite/bin/repo-inv-mcp.mjs"],
-      "cwd": "/home/l/code_analysis_suite",
-      "type": "stdio"
-    }
-  }
-}
+```bash
+repo-inv install-mcp                    # 列出所有支持的 host
+repo-inv install-mcp <host>             # 注册到指定 host
+repo-inv install-mcp --all              # 注册到所有已存在配置文件的 host
+repo-inv install-mcp <host> --dry-run   # 预览将要写入的内容
 ```
+
+| Host | 写入文件 |
+|---|---|
+| `copilot` | `~/.copilot/mcp-config.json` |
+| `cursor` | `~/.cursor/mcp.json` |
+| `gemini` | `~/.gemini/settings.json` |
+| `codex` | `~/.codex/config.toml`（TOML block） |
+| `windsurf` | `~/.codeium/windsurf/mcp_config.json` |
+| `claude-desktop` | `~/.config/claude/claude_desktop_config.json` |
+| `claude-code` | 输出 `claude mcp add` 命令给你跑 |
+| `hermes` | 输出通用 stdio JSON 供手工映射 |
 
 **MCP 暴露的 9 个工具：**
 

@@ -19,6 +19,9 @@ Agent 接到"分析这个开源仓库"类任务时，**第一步必须用这个 
 # Node.js CLI（唯一引擎）
 node /home/l/code_analysis_suite/bin/repo-inv analyze <target-repo>
 
+# 并行模式（三层同时跑，~3x 速度，日志会交织）
+node /home/l/code_analysis_suite/bin/repo-inv analyze <target-repo> --parallel
+
 # bash 兼容入口（已退化为 Node CLI 的薄包装，不再独立维护）
 bash /home/l/code_analysis_suite/.agents/skills/repo-investigator/scripts/analyze.sh <target-repo>
 ```
@@ -31,16 +34,17 @@ bash /home/l/code_analysis_suite/.agents/skills/repo-investigator/scripts/analyz
 | `02-logic/` | 安全规则、重复代码、圈复杂度、类型问题、死代码 | `lizard.txt` top-10 是热点 → `semgrep.json` 是风险 → `vulture.txt` / `jscpd` 是可删/可重构面 |
 | `03-efficiency/` | 性能、复杂度趋势、内存 | `radon-cc.txt` / `wily.txt` 看演化，py-spy/memray 需可运行场景 |
 
-最终 `SUMMARY.md` 在输出根目录，是给人/agent 看的人读视图。
+最终 `SUMMARY.md`（人读）+ `report.json`（机器读，agent 友好）在输出根目录。
 
 ### 推荐工作流（agent 拿到一个新仓库时）
 
 1. **`node bin/repo-inv tools`** — 先看本机哪些工具可用（缺的会跳过，不会报错）
-2. **`node bin/repo-inv analyze <target>`** — 跑全量三层
-3. **读 `SUMMARY.md` + `01-arch/scc.txt`** — 形成第一印象
-4. **结合 code-review-graph MCP**（`semantic_search_nodes` / `query_graph` / `get_architecture_overview`）做交叉验证
-5. **挑 `lizard` top-10 复杂函数 + 调用图入口** —— 这两个加起来就是"业务逻辑骨架"
-6. **把 `semgrep.json` + `vulture.txt` + `jscpd` 当成"质量画像"** 输出给用户
+2. **`node bin/repo-inv analyze <target> --parallel`** — 三层并行跑全量（~3x 速度）
+3. **读 `report.json`**（agent 主入口）+ `SUMMARY.md`（人读视图）—— 形成第一印象
+4. **`node bin/repo-inv learn`** — 让 DeepSeek 综合 report.json + SUMMARY 输出"学习指南"（架构速读 / 业务核心 / 质量画像 / 可借鉴点 / 风险盲区），结果存为 `LEARNINGS.md`
+5. **结合 code-review-graph MCP**（`semantic_search_nodes` / `query_graph` / `get_architecture_overview`）做交叉验证
+6. **挑 `lizard` top-10 复杂函数 + 调用图入口** —— 这两个加起来就是"业务逻辑骨架"
+7. **把 `semgrep.json` + `bandit.json` + `vulture.txt` + `jscpd` 当成"质量画像"** 输出给用户
 
 ### 单工具补救
 
@@ -100,6 +104,18 @@ brew install graphviz              # macOS
 ```
 
 不装 graphviz 不会报错，但 `pydeps.svg` 会静默缺失。`repo-inv tools` 不检测它（它是间接依赖）。
+
+### LLM 配置（用 `repo-inv learn` 时需要）
+
+在仓库根目录创建 `.env`（已 gitignore）：
+
+```bash
+DEEPSEEK_API_KEY=sk-...
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-chat
+```
+
+`repo-inv learn` 会读取 `.env` 或环境变量，把 `report.json + SUMMARY.md` 喂给 DeepSeek，产出 `LEARNINGS.md`。
 
 ---
 

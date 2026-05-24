@@ -28,6 +28,7 @@ program
   .description('Run investigation on a repository')
   .option('-l, --layer <layers>', 'Layers to run: arch,logic,efficiency (default: all)', 'all')
   .option('-o, --output <dir>', 'Output directory (default: ~/.cache/repo-inv/<repo>-<ts>)')
+  .option('-p, --parallel', 'Run the three layers concurrently (~3x faster, interleaved logs)')
   .action(async (repo, options) => {
     const absRepo = path.resolve(repo);
     if (!fs.existsSync(absRepo)) {
@@ -45,13 +46,22 @@ program
     console.log(chalk.bold('🔍 Repo Investigator v1.0.0'));
     console.log(`   Target: ${chalk.cyan(absRepo)}`);
     console.log(`   Output: ${chalk.cyan(absOut)}`);
-    console.log(`   Layers: ${chalk.yellow(options.layer)}`);
+    console.log(`   Layers: ${chalk.yellow(options.layer)}${options.parallel ? chalk.magenta(' [parallel]') : ''}`);
 
     const layers = options.layer === 'all' ? ['arch', 'logic', 'efficiency'] : options.layer.split(',');
+    const runners = {
+      arch: () => runArchitecture(absRepo, absOut),
+      logic: () => runLogic(absRepo, absOut),
+      efficiency: () => runEfficiency(absRepo, absOut),
+    };
 
-    if (layers.includes('arch')) await runArchitecture(absRepo, absOut);
-    if (layers.includes('logic')) await runLogic(absRepo, absOut);
-    if (layers.includes('efficiency')) await runEfficiency(absRepo, absOut);
+    if (options.parallel) {
+      // Layers write to disjoint output subdirs, so they're safe to run concurrently.
+      // Logs interleave; trade-off accepted for ~3x wall-clock speedup.
+      await Promise.all(layers.filter(l => runners[l]).map(l => runners[l]()));
+    } else {
+      for (const l of layers) if (runners[l]) await runners[l]();
+    }
 
     generateSummary(absRepo, absOut);
     console.log(chalk.green(`\n✅ Done. Report: ${path.join(absOut, 'SUMMARY.md')}`));
@@ -153,6 +163,125 @@ program
     };
     fs.writeFileSync('.repo-inv.json', JSON.stringify(config, null, 2));
     console.log(chalk.green('✅ Created .repo-inv.json'));
+  });
+
+// ── learn ──────────────────────────────────────────────────────────────────
+// Feed report.json + SUMMARY.md into an LLM for a synthesized "what to learn
+// from this codebase" briefing. Reads DEEPSEEK_API_KEY from env or the suite's
+// .env file (no extra deps).
+function loadEnvFromFile(file) {
+  if (!fs.existsSync(file)) return;
+  for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+    const m = line.match(/^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*?)\s*$/);
+    if (!m) continue;
+    let val = m[2];
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+      val = val.slice(1, -1);
+    }
+    if (!process.env[m[1]]) process.env[m[1]] = val;
+  }
+}
+
+program
+  .command('learn [output]')
+  .description('Use DeepSeek to synthesize a "what to learn" briefing from the latest report')
+  .option('-m, --model <name>', 'DeepSeek model id', 'deepseek-chat')
+  .option('--max-snippets <n>', 'Max chars of lizard hotspot context to include', '4000')
+  .action(async (output, options) => {
+    loadEnvFromFile(path.join(__dirname, '..', '.env'));
+    const apiKey = process.env.DEEPSEEK_API_KEY;
+    if (!apiKey) {
+      console.error(chalk.red('❌ DEEPSEEK_API_KEY not set. Add it to .env (in suite root) or export it.'));
+      console.log(chalk.gray('   Example: echo "DEEPSEEK_API_KEY=sk-..." >> ' + path.join(__dirname, '..', '.env')));
+      process.exit(1);
+    }
+
+    // Pick latest run if no path
+    let dir;
+    if (output) {
+      dir = path.resolve(output);
+    } else if (fs.existsSync(DEFAULT_OUT_ROOT)) {
+      const runs = fs.readdirSync(DEFAULT_OUT_ROOT)
+        .map(name => ({ name, full: path.join(DEFAULT_OUT_ROOT, name) }))
+        .filter(e => { try { return fs.statSync(e.full).isDirectory(); } catch { return false; } })
+        .sort((a, b) => fs.statSync(b.full).mtimeMs - fs.statSync(a.full).mtimeMs);
+      if (runs.length === 0) {
+        console.error(chalk.red(`No reports found under ${DEFAULT_OUT_ROOT}`));
+        process.exit(1);
+      }
+      dir = runs[0].full;
+    } else {
+      console.error(chalk.red('No report dir specified and no cache found.'));
+      process.exit(1);
+    }
+
+    const reportPath = path.join(dir, 'report.json');
+    const summaryPath = path.join(dir, 'SUMMARY.md');
+    if (!fs.existsSync(reportPath) || !fs.existsSync(summaryPath)) {
+      console.error(chalk.red(`Missing report.json or SUMMARY.md in ${dir}`));
+      console.log(`Run ${chalk.cyan('repo-inv analyze <repo>')} first.`);
+      process.exit(1);
+    }
+
+    console.log(chalk.bold('🧠 Synthesizing learnings via DeepSeek...'));
+    console.log(`   Source: ${chalk.cyan(dir)}`);
+    console.log(`   Model:  ${chalk.yellow(options.model)}`);
+
+    const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+    const summary = fs.readFileSync(summaryPath, 'utf8');
+
+    const prompt = `你是开源仓库架构分析专家。下面是对仓库 "${report.repo.name}" 的静态分析结果，请输出**学习指南**，包含：
+
+1. **架构速读**（3-5 句）：项目规模、主语言、模块边界、调用图入口
+2. **业务逻辑核心**（5-10 个最值得读的函数/文件，按 lizard hotspots + 调用图入口推导）
+3. **质量画像**：semgrep/bandit/pyright/vulture 综合，按严重度排序
+4. **可借鉴的设计点**（这个项目里哪些模式/手法值得在我自己的项目中复用）
+5. **风险与盲区**（这个项目里哪些代码不要学）
+
+要点：
+- 直接给结论，不要复述输入数据
+- 引用具体文件/函数名，不要泛泛而谈
+- 中文输出，Markdown 格式
+- 总长度控制在 800-1200 字
+
+=== report.json ===
+${JSON.stringify(report, null, 2).slice(0, 12000)}
+
+=== SUMMARY.md ===
+${summary.slice(0, parseInt(options.maxSnippets, 10) || 4000)}
+`;
+
+    try {
+      const resp = await fetch('https://api.deepseek.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: options.model,
+          messages: [
+            { role: 'system', content: '你是资深开源代码考古学家，擅长从静态分析数据反向推导项目的设计意图与可学习点。' },
+            { role: 'user', content: prompt },
+          ],
+          temperature: 0.3,
+        }),
+      });
+      if (!resp.ok) {
+        console.error(chalk.red(`❌ DeepSeek API error: ${resp.status} ${resp.statusText}`));
+        console.error(await resp.text());
+        process.exit(1);
+      }
+      const data = await resp.json();
+      const content = data.choices?.[0]?.message?.content || '';
+      const learningsPath = path.join(dir, 'LEARNINGS.md');
+      fs.writeFileSync(learningsPath, content);
+      console.log(chalk.green(`\n✅ Learnings written to ${learningsPath}\n`));
+      console.log(content);
+    } catch (err) {
+      console.error(chalk.red(`❌ Request failed: ${err.message}`));
+      process.exit(1);
+    }
   });
 
 program.parse();

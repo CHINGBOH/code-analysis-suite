@@ -3,11 +3,20 @@
 const { Command } = require('commander');
 const chalk = require('chalk');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { listTools, getTool, checkTool } = require('../lib/tools');
 const { runArchitecture, runLogic, runEfficiency, generateSummary } = require('../lib/runner');
 
 const program = new Command();
+
+// Default output root lives outside any target repo so analyses don't pollute
+// the inspected repo's working tree. Each run gets its own timestamped folder.
+const DEFAULT_OUT_ROOT = path.join(os.homedir(), '.cache', 'repo-inv');
+function defaultOutputFor(repoPath) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  return path.join(DEFAULT_OUT_ROOT, `${path.basename(repoPath)}-${stamp}`);
+}
 
 program
   .name('repo-inv')
@@ -18,7 +27,7 @@ program
   .command('analyze <repo>')
   .description('Run investigation on a repository')
   .option('-l, --layer <layers>', 'Layers to run: arch,logic,efficiency (default: all)', 'all')
-  .option('-o, --output <dir>', 'Output directory', './investigation-report')
+  .option('-o, --output <dir>', 'Output directory (default: ~/.cache/repo-inv/<repo>-<ts>)')
   .action(async (repo, options) => {
     const absRepo = path.resolve(repo);
     if (!fs.existsSync(absRepo)) {
@@ -30,7 +39,7 @@ program
       process.exit(1);
     }
 
-    const absOut = path.resolve(options.output);
+    const absOut = path.resolve(options.output || defaultOutputFor(absRepo));
     fs.mkdirSync(absOut, { recursive: true });
 
     console.log(chalk.bold('🔍 Repo Investigator v1.0.0'));
@@ -98,15 +107,31 @@ program
 
 program
   .command('report [output]')
-  .description('Show summary of the last investigation')
+  .description('Show summary of an investigation (defaults to most recent in ~/.cache/repo-inv/)')
   .action((output) => {
-    const dir = output ? path.resolve(output) : path.resolve('./investigation-report');
+    let dir;
+    if (output) {
+      dir = path.resolve(output);
+    } else if (fs.existsSync(DEFAULT_OUT_ROOT)) {
+      const runs = fs.readdirSync(DEFAULT_OUT_ROOT)
+        .map(name => ({ name, full: path.join(DEFAULT_OUT_ROOT, name) }))
+        .filter(e => { try { return fs.statSync(e.full).isDirectory(); } catch { return false; } })
+        .sort((a, b) => fs.statSync(b.full).mtimeMs - fs.statSync(a.full).mtimeMs);
+      if (runs.length === 0) {
+        console.error(chalk.red(`No reports found under ${DEFAULT_OUT_ROOT}`));
+        process.exit(1);
+      }
+      dir = runs[0].full;
+    } else {
+      dir = path.resolve('./investigation-report');
+    }
     const summary = path.join(dir, 'SUMMARY.md');
     if (!fs.existsSync(summary)) {
       console.error(chalk.red(`No report found at ${summary}`));
       console.log(`Run ${chalk.cyan('repo-inv analyze <repo>')} first.`);
       process.exit(1);
     }
+    console.log(chalk.gray(`# from: ${dir}\n`));
     console.log(fs.readFileSync(summary, 'utf8'));
   });
 

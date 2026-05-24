@@ -16,14 +16,14 @@ Agent 接到"分析这个开源仓库"类任务时，**第一步必须用这个 
 ### 三层扫描（默认全跑）
 
 ```bash
-# Node.js CLI（首选）
+# Node.js CLI（唯一引擎）
 node /home/l/code_analysis_suite/bin/repo-inv analyze <target-repo>
 
-# bash 镜像（无 node 环境时用）
+# bash 兼容入口（已退化为 Node CLI 的薄包装，不再独立维护）
 bash /home/l/code_analysis_suite/.agents/skills/repo-investigator/scripts/analyze.sh <target-repo>
 ```
 
-输出目录默认 `./investigation-report/`，分三层：
+输出目录默认 `~/.cache/repo-inv/<repo>-<timestamp>/`（不会污染目标仓库），分三层：
 
 | 目录 | 关注 | 给 agent 的解读建议 |
 |---|---|---|
@@ -86,19 +86,33 @@ node bin/repo-inv tool <name>     # 看安装提示
 
 ---
 
+## 系统依赖（必装）
+
+工具链本身用 npm/pip 装即可，但有一个**系统级依赖**容易漏：
+
+```bash
+# graphviz —— pydeps / code2flow / pyan3 生成 SVG/DOT 时硬依赖
+sudo apt install -y graphviz       # Debian/Ubuntu
+brew install graphviz              # macOS
+```
+
+不装 graphviz 不会报错，但 `pydeps.svg` 会静默缺失。`repo-inv tools` 不检测它（它是间接依赖）。
+
+---
+
 ## 仓库自身结构
 
 | 路径 | 作用 |
 |---|---|
 | `bin/repo-inv` | commander CLI，5 个子命令（`analyze` / `tools` / `tool` / `report` / `init`） |
 | `lib/tools.js` | **工具元数据唯一来源**（注册表 + 检测命令 + 示例 + tips） |
-| `lib/runner.js` | 三层执行引擎，`hasCommand` 探测 → `spawn` 调用 → 写文件 → `generateSummary` 汇总 |
-| `.agents/skills/repo-investigator/` | Skill 镜像（`SKILL.md` + bash 版 `analyze.sh` + per-tool 中文 docs） |
+| `lib/runner.js` | **三层执行引擎（唯一）**，`hasCommand` 探测 → `spawn` 调用 → 写文件 → `generateSummary` 汇总 |
+| `.agents/skills/repo-investigator/` | Skill 元数据 + `analyze.sh`（Node CLI 的薄包装兼容入口）+ per-tool 中文 docs |
 | `.github/copilot-instructions.md` | Copilot agent 进入本仓库后的工作约定 |
 | `CLAUDE.md` / `CLAUDE_CODE_GUIDE.md` | Claude Code agent 的工作约定与命令参考 |
 | `COPILOT_USAGE_GUIDE.md` | Copilot CLI 全命令 / Skills / 工具速查 |
 
-> **代码改动约定**：加新工具必须三处同步——`lib/tools.js` 注册表 + `lib/runner.js` 对应 `run*` 函数 + `.agents/skills/repo-investigator/scripts/analyze.sh`。
+> **代码改动约定**：加新工具只需两处同步——`lib/tools.js` 注册表 + `lib/runner.js` 对应 `run*` 函数。`analyze.sh` 是 Node CLI 的薄包装，无需改动。
 
 ---
 

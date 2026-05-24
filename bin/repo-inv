@@ -7,6 +7,7 @@ const os = require('os');
 const path = require('path');
 const { listTools, getTool, checkTool } = require('../lib/tools');
 const { runArchitecture, runLogic, runEfficiency, generateSummary } = require('../lib/runner');
+const db = require('../lib/db');
 
 const program = new Command();
 
@@ -64,6 +65,12 @@ program
     }
 
     generateSummary(absRepo, absOut);
+    try {
+      const row = db.upsertReport(absOut);
+      console.log(chalk.gray(`   Indexed as #${row.id} in ${db.DEFAULT_DB_PATH}`));
+    } catch (err) {
+      console.error(chalk.yellow(`   ⚠️  Index update failed: ${err.message}`));
+    }
     console.log(chalk.green(`\n✅ Done. Report: ${path.join(absOut, 'SUMMARY.md')}`));
   });
 
@@ -277,11 +284,139 @@ ${summary.slice(0, parseInt(options.maxSnippets, 10) || 4000)}
       const learningsPath = path.join(dir, 'LEARNINGS.md');
       fs.writeFileSync(learningsPath, content);
       console.log(chalk.green(`\n✅ Learnings written to ${learningsPath}\n`));
+      try {
+        db.upsertReport(dir);
+        console.log(chalk.gray(`   Index refreshed with new learnings.\n`));
+      } catch (err) {
+        console.error(chalk.yellow(`   ⚠️  Index refresh failed: ${err.message}\n`));
+      }
       console.log(content);
     } catch (err) {
       console.error(chalk.red(`❌ Request failed: ${err.message}`));
       process.exit(1);
     }
+  });
+
+// ── list ───────────────────────────────────────────────────────────────────
+// Show every indexed repo, sorted by recency / size / quality.
+program
+  .command('list')
+  .description('List all indexed repos in the knowledge base')
+  .option('--by <field>', 'Sort by: recent, size, quality, complexity', 'recent')
+  .action((options) => {
+    const orderMap = {
+      recent: 'scanned_at DESC',
+      size: 'total_code DESC',
+      quality: '(IFNULL(semgrep_error,0)+IFNULL(bandit_high,0)+IFNULL(pyright_errors,0)) ASC',
+      complexity: 'lizard_max_ccn DESC',
+    };
+    const orderBy = orderMap[options.by] || orderMap.recent;
+    const rows = db.listRepos({ orderBy });
+    if (rows.length === 0) {
+      console.log(chalk.yellow('No repos indexed yet. Run `repo-inv analyze <repo>` first.'));
+      return;
+    }
+    console.log(chalk.bold(`\n📚 Indexed repos (sorted by ${options.by})\n`));
+    const fmt = (n) => n == null ? '—' : String(n);
+    const pad = (s, w) => String(s).padEnd(w);
+    console.log(chalk.gray(pad('NAME', 24) + pad('LANG', 10) + pad('LOC', 10) + pad('MAX CCN', 9) + pad('SEC-HI', 8) + pad('PYR-ERR', 9) + 'SCANNED'));
+    console.log(chalk.gray('─'.repeat(100)));
+    for (const r of rows) {
+      const secHigh = (r.semgrep_error || 0) + (r.bandit_high || 0);
+      console.log(
+        pad(r.name.slice(0, 23), 24) +
+        pad(r.primary_lang || '—', 10) +
+        pad(fmt(r.total_code), 10) +
+        pad(fmt(r.lizard_max_ccn), 9) +
+        pad(fmt(secHigh), 8) +
+        pad(fmt(r.pyright_errors), 9) +
+        chalk.gray(r.scanned_at.slice(0, 19))
+      );
+    }
+    console.log('');
+  });
+
+// ── search ─────────────────────────────────────────────────────────────────
+// FTS5 query against LEARNINGS.md + SUMMARY.md content of every indexed repo.
+program
+  .command('search <query>')
+  .description('Full-text search across all indexed learnings & summaries (FTS5 syntax)')
+  .option('--lang <lang>', 'Filter by primary language')
+  .option('--max-ccn <n>', 'Only repos whose max CCN ≤ n (find clean codebases)', parseInt)
+  .option('--limit <n>', 'Max results', (v) => parseInt(v, 10), 20)
+  .action((query, options) => {
+    let rows;
+    try {
+      rows = db.searchRepos(query, { limit: options.limit });
+    } catch (err) {
+      console.error(chalk.red(`FTS query failed: ${err.message}`));
+      console.log(chalk.gray('Hint: FTS5 syntax — use OR, "phrase", -term, prefix*'));
+      process.exit(1);
+    }
+    if (options.lang) rows = rows.filter(r => (r.primary_lang || '').toLowerCase() === options.lang.toLowerCase());
+    if (options.maxCcn != null) rows = rows.filter(r => r.lizard_max_ccn != null && r.lizard_max_ccn <= options.maxCcn);
+
+    if (rows.length === 0) {
+      console.log(chalk.yellow(`No matches for "${query}".`));
+      return;
+    }
+    console.log(chalk.bold(`\n🔎 ${rows.length} match(es) for "${query}"\n`));
+    for (const r of rows) {
+      console.log(chalk.cyan(`▶ ${r.name}`) + chalk.gray(`  [${r.primary_lang || '—'}, ${r.total_code || '?'} LOC, max CCN ${r.lizard_max_ccn ?? '?'}]`));
+      if (r.hit_learnings && r.hit_learnings !== '') console.log('  ' + chalk.gray('learnings:') + ' ' + r.hit_learnings);
+      if (r.hit_summary && r.hit_summary !== '') console.log('  ' + chalk.gray('summary:  ') + ' ' + r.hit_summary);
+      console.log(chalk.gray(`  → ${r.report_dir}\n`));
+    }
+  });
+
+// ── compare ────────────────────────────────────────────────────────────────
+// Side-by-side comparison of two indexed repos: lang mix, complexity, safety.
+program
+  .command('compare <repoA> <repoB>')
+  .description('Side-by-side comparison of two indexed repos')
+  .action((repoA, repoB) => {
+    const a = db.getRepoByName(repoA);
+    const b = db.getRepoByName(repoB);
+    if (!a) { console.error(chalk.red(`Repo "${repoA}" not found in index.`)); process.exit(1); }
+    if (!b) { console.error(chalk.red(`Repo "${repoB}" not found in index.`)); process.exit(1); }
+
+    const pad = (s, w) => String(s == null ? '—' : s).padEnd(w);
+    const row = (label, va, vb) => {
+      const flag = (typeof va === 'number' && typeof vb === 'number' && va !== vb)
+        ? (va < vb ? chalk.green(' ◀ A better') : chalk.green(' B better ▶'))
+        : '';
+      console.log(pad(label, 22) + pad(va, 22) + pad(vb, 22) + flag);
+    };
+
+    console.log(chalk.bold(`\n⚖️  ${a.name}  vs  ${b.name}\n`));
+    console.log(chalk.gray(pad('METRIC', 22) + pad(a.name.slice(0, 21), 22) + pad(b.name.slice(0, 21), 22)));
+    console.log(chalk.gray('─'.repeat(70)));
+    row('primary_lang',     a.primary_lang, b.primary_lang);
+    row('total_files',      a.total_files, b.total_files);
+    row('total_code',       a.total_code, b.total_code);
+    row('total_complexity', a.total_complexity, b.total_complexity);
+    row('lizard_max_ccn',   a.lizard_max_ccn, b.lizard_max_ccn);
+    row('hotspots (>=15)',  a.lizard_hotspot_count, b.lizard_hotspot_count);
+    row('semgrep ERROR',    a.semgrep_error, b.semgrep_error);
+    row('bandit HIGH',      a.bandit_high, b.bandit_high);
+    row('pyright errors',   a.pyright_errors, b.pyright_errors);
+    row('mypy errors',      a.mypy_errors, b.mypy_errors);
+    row('vulture candidates', a.vulture_candidates, b.vulture_candidates);
+    row('jscpd %',          a.jscpd_pct, b.jscpd_pct);
+
+    console.log(chalk.bold('\nLanguage mix:'));
+    const langs = new Set([...(a.languages || []).map(l => l.name), ...(b.languages || []).map(l => l.name)]);
+    const aLang = Object.fromEntries((a.languages || []).map(l => [l.name, l.code]));
+    const bLang = Object.fromEntries((b.languages || []).map(l => [l.name, l.code]));
+    const ranked = [...langs].sort((x, y) => (Math.max(bLang[y] || 0, aLang[y] || 0)) - (Math.max(bLang[x] || 0, aLang[x] || 0))).slice(0, 8);
+    console.log(chalk.gray(pad('LANG', 22) + pad('A loc', 22) + pad('B loc', 22)));
+    for (const l of ranked) row(l, aLang[l] || 0, bLang[l] || 0);
+
+    console.log(chalk.bold(`\nTop hotspots — ${a.name}:`));
+    for (const h of (a.hotspots || []).slice(0, 5)) console.log(`  CCN ${pad(h.ccn, 4)} ${h.location}`);
+    console.log(chalk.bold(`\nTop hotspots — ${b.name}:`));
+    for (const h of (b.hotspots || []).slice(0, 5)) console.log(`  CCN ${pad(h.ccn, 4)} ${h.location}`);
+    console.log('');
   });
 
 program.parse();

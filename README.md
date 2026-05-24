@@ -39,12 +39,29 @@ bash /home/l/code_analysis_suite/.agents/skills/repo-investigator/scripts/analyz
 ### 推荐工作流（agent 拿到一个新仓库时）
 
 1. **`node bin/repo-inv tools`** — 先看本机哪些工具可用（缺的会跳过，不会报错）
-2. **`node bin/repo-inv analyze <target> --parallel`** — 三层并行跑全量（~3x 速度）
+2. **`node bin/repo-inv analyze <target> --parallel`** — 三层并行跑全量（~3x 速度），结束后自动入库到 `~/.cache/repo-inv/index.db`
 3. **读 `report.json`**（agent 主入口）+ `SUMMARY.md`（人读视图）—— 形成第一印象
-4. **`node bin/repo-inv learn`** — 让 DeepSeek 综合 report.json + SUMMARY 输出"学习指南"（架构速读 / 业务核心 / 质量画像 / 可借鉴点 / 风险盲区），结果存为 `LEARNINGS.md`
+4. **`node bin/repo-inv learn`** — 让 DeepSeek 综合 report.json + SUMMARY 输出"学习指南"（架构速读 / 业务核心 / 质量画像 / 可借鉴点 / 风险盲区），结果存为 `LEARNINGS.md` 并刷新到索引库
 5. **结合 code-review-graph MCP**（`semantic_search_nodes` / `query_graph` / `get_architecture_overview`）做交叉验证
 6. **挑 `lizard` top-10 复杂函数 + 调用图入口** —— 这两个加起来就是"业务逻辑骨架"
 7. **把 `semgrep.json` + `bandit.json` + `vulture.txt` + `jscpd` 当成"质量画像"** 输出给用户
+
+### 跨仓库知识库（Sprint 1 新增）
+
+每次 `analyze` 都会自动落到 SQLite 索引（`~/.cache/repo-inv/index.db`），随后可跨仓库检索、对比、排序——这是"抄作业要排列组合地抄"的基础：
+
+```bash
+# 列出所有已索引仓库（按 recent/size/quality/complexity 排序）
+node bin/repo-inv list --by quality
+
+# 全文搜索 LEARNINGS.md + SUMMARY.md（FTS5 语法，支持 OR / "短语" / -排除 / 前缀*）
+node bin/repo-inv search "async OR await OR coroutine" --lang python --max-ccn 30
+
+# 两个仓库并排对比：语言分布 / 复杂度 / 安全 / 重复率 / hotspot
+node bin/repo-inv compare repo-fastapi repo-crewai
+```
+
+`compare` 输出会自动标记每个指标"A better / B better"，帮你判断哪个项目在某个维度更值得抄。
 
 ### 单工具补救
 

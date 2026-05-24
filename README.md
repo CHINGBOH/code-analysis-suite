@@ -8,6 +8,7 @@
 indexes the result into a cross-repo knowledge base, and lets your AI coding agent
 "mix-and-match copy" architecture from the best of OSS.*
 
+[![CI](https://github.com/CHINGBOH/code-analysis-suite/actions/workflows/ci.yml/badge.svg)](https://github.com/CHINGBOH/code-analysis-suite/actions/workflows/ci.yml)
 [![Node](https://img.shields.io/badge/node-%E2%89%A518-339933?logo=node.js&logoColor=white)](#installation)
 [![MCP](https://img.shields.io/badge/MCP-stdio-blue)](#mcp-integration)
 [![Agents](https://img.shields.io/badge/agents-Claude%20Code%20%7C%20Codex%20%7C%20Copilot%20%7C%20Cursor%20%7C%20Gemini%20%7C%20Windsurf-orange)](docs/MCP.md)

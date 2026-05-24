@@ -1,0 +1,237 @@
+# Curated architectural-pattern detection rules for repo-inv.
+#
+# These rules are TIGHTLY scoped — only fire on idiomatic shapes that signal
+# the named pattern. False positives are worse than misses here: each hit
+# becomes a "this repo uses pattern X" data point in the knowledge base.
+#
+# Languages covered: python (primary), some apply to typescript/javascript.
+
+rules:
+  # ── concurrency / resilience ────────────────────────────────────────────
+  - id: pattern-retry-decorator
+    message: retry decorator (tenacity / backoff / custom)
+    languages: [python]
+    severity: INFO
+    metadata: { category: resilience, pattern: retry }
+    patterns:
+      - pattern-either:
+          - pattern: "@retry(...)"
+          - pattern: "@tenacity.retry(...)"
+          - pattern: "@backoff.on_exception(...)"
+          - pattern: "@backoff.on_predicate(...)"
+
+  - id: pattern-circuit-breaker
+    message: circuit breaker pattern
+    languages: [python]
+    severity: INFO
+    metadata: { category: resilience, pattern: circuit_breaker }
+    patterns:
+      - pattern-either:
+          - pattern: "@circuit(...)"
+          - pattern: "CircuitBreaker(...)"
+          - pattern-regex: "(?i)circuit.?breaker"
+
+  - id: pattern-rate-limiter
+    message: rate limiter / throttle
+    languages: [python]
+    severity: INFO
+    metadata: { category: resilience, pattern: rate_limit }
+    patterns:
+      - pattern-either:
+          - pattern: "@limits(...)"
+          - pattern: "@sleep_and_retry"
+          - pattern: "RateLimiter(...)"
+          - pattern: "Semaphore(...)"
+          - pattern: "asyncio.Semaphore(...)"
+
+  # ── async / context ─────────────────────────────────────────────────────
+  - id: pattern-async-context-manager
+    message: async context manager (__aenter__/__aexit__)
+    languages: [python]
+    severity: INFO
+    metadata: { category: async, pattern: async_context }
+    patterns:
+      - pattern: |
+          async def __aenter__(self, ...):
+              ...
+
+  - id: pattern-context-manager
+    message: context manager (__enter__/__exit__ or @contextmanager)
+    languages: [python]
+    severity: INFO
+    metadata: { category: lifecycle, pattern: context_manager }
+    patterns:
+      - pattern-either:
+          - pattern: "@contextmanager"
+          - pattern: "@contextlib.contextmanager"
+          - pattern: "@asynccontextmanager"
+
+  - id: pattern-asyncio-gather
+    message: asyncio.gather concurrent fan-out
+    languages: [python]
+    severity: INFO
+    metadata: { category: async, pattern: fanout }
+    pattern-either:
+      - pattern: "asyncio.gather(...)"
+      - pattern: "await asyncio.gather(...)"
+
+  # ── caching ─────────────────────────────────────────────────────────────
+  - id: pattern-functools-cache
+    message: functools.lru_cache / cache
+    languages: [python]
+    severity: INFO
+    metadata: { category: perf, pattern: cache }
+    patterns:
+      - pattern-either:
+          - pattern: "@functools.lru_cache(...)"
+          - pattern: "@lru_cache(...)"
+          - pattern: "@functools.cache"
+          - pattern: "@cache"
+          - pattern: "@cached_property"
+
+  # ── plugin / registry ───────────────────────────────────────────────────
+  - id: pattern-entry-points-registry
+    message: setuptools entry_points / pkg_resources plugin discovery
+    languages: [python]
+    severity: INFO
+    metadata: { category: extensibility, pattern: plugin_registry }
+    patterns:
+      - pattern-either:
+          - pattern: "importlib.metadata.entry_points(...)"
+          - pattern: "pkg_resources.iter_entry_points(...)"
+          - pattern: "entry_points(group=$X)"
+
+  - id: pattern-class-registry
+    message: class registry via __init_subclass__
+    languages: [python]
+    severity: INFO
+    metadata: { category: extensibility, pattern: subclass_registry }
+    pattern: |
+      def __init_subclass__(cls, ...):
+          ...
+
+  # ── DI / IoC ────────────────────────────────────────────────────────────
+  - id: pattern-fastapi-depends
+    message: FastAPI Depends() injection
+    languages: [python]
+    severity: INFO
+    metadata: { category: di, pattern: depends_injection }
+    pattern: Depends(...)
+
+  - id: pattern-protocol-abc
+    message: Protocol / ABC interface declaration
+    languages: [python]
+    severity: INFO
+    metadata: { category: typing, pattern: interface }
+    patterns:
+      - pattern-either:
+          - pattern: |
+              class $C(Protocol):
+                  ...
+          - pattern: |
+              class $C(ABC):
+                  ...
+          - pattern: "@abstractmethod"
+
+  # ── data modeling ───────────────────────────────────────────────────────
+  - id: pattern-pydantic-model
+    message: pydantic BaseModel
+    languages: [python]
+    severity: INFO
+    metadata: { category: data, pattern: pydantic }
+    pattern: |
+      class $C(BaseModel):
+          ...
+
+  - id: pattern-dataclass
+    message: dataclass / attrs
+    languages: [python]
+    severity: INFO
+    metadata: { category: data, pattern: dataclass }
+    patterns:
+      - pattern-either:
+          - pattern: "@dataclass"
+          - pattern: "@dataclasses.dataclass"
+          - pattern: "@attr.s"
+          - pattern: "@attrs.define"
+
+  # ── architecture / runtime ──────────────────────────────────────────────
+  - id: pattern-middleware
+    message: middleware chain (fastapi/starlette/django)
+    languages: [python]
+    severity: INFO
+    metadata: { category: arch, pattern: middleware }
+    patterns:
+      - pattern-either:
+          - pattern: "$APP.add_middleware(...)"
+          - pattern: "$APP.middleware($T)"
+          - pattern: |
+              class $M(BaseHTTPMiddleware):
+                  ...
+
+  - id: pattern-state-machine
+    message: explicit state machine (transitions/statemachine)
+    languages: [python]
+    severity: INFO
+    metadata: { category: arch, pattern: state_machine }
+    patterns:
+      - pattern-either:
+          - pattern-regex: "(?i)class\\s+\\w*StateMachine"
+          - pattern: "Machine(model=$X, ...)"
+          - pattern: "@transition(...)"
+
+  - id: pattern-event-emitter
+    message: event emitter / signal / observer
+    languages: [python]
+    severity: INFO
+    metadata: { category: arch, pattern: events }
+    patterns:
+      - pattern-either:
+          - pattern: "$SIG.connect(...)"
+          - pattern: "$EMITTER.on($EVT, ...)"
+          - pattern: "$EMITTER.emit($EVT, ...)"
+          - pattern: "Signal(...)"
+
+  - id: pattern-singleton
+    message: singleton via metaclass or module-level cache
+    languages: [python]
+    severity: INFO
+    metadata: { category: arch, pattern: singleton }
+    patterns:
+      - pattern-either:
+          - pattern-regex: "class\\s+\\w+Meta\\b.*type"
+          - pattern: |
+              def __new__(cls, ...):
+                  if cls._instance is None:
+                      ...
+
+  - id: pattern-builder
+    message: builder/fluent interface (return self chain)
+    languages: [python]
+    severity: INFO
+    metadata: { category: arch, pattern: builder }
+    pattern: |
+      def $M(self, ...):
+          ...
+          return self
+
+  # ── testing / quality ───────────────────────────────────────────────────
+  - id: pattern-pytest-fixture
+    message: pytest fixture
+    languages: [python]
+    severity: INFO
+    metadata: { category: testing, pattern: pytest_fixture }
+    patterns:
+      - pattern-either:
+          - pattern: "@pytest.fixture"
+          - pattern: "@pytest.fixture(...)"
+
+  - id: pattern-property-based-testing
+    message: property-based testing (hypothesis)
+    languages: [python]
+    severity: INFO
+    metadata: { category: testing, pattern: hypothesis }
+    patterns:
+      - pattern-either:
+          - pattern: "@given(...)"
+          - pattern: "@hypothesis.given(...)"

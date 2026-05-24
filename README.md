@@ -63,6 +63,27 @@ node bin/repo-inv compare repo-fastapi repo-crewai
 
 `compare` 输出会自动标记每个指标"A better / B better"，帮你判断哪个项目在某个维度更值得抄。
 
+### 模式索引 + 代码移植 + AI 推荐（Sprint 2 新增）
+
+把"抄作业"从"复制粘贴"升级成"排列组合地抄"：
+
+```bash
+# 1) 模式扫描：用 rules/patterns.yml 里的 20 条精选规则识别 retry/DI/中间件/缓存/插件/状态机/builder 等
+node bin/repo-inv patterns /tmp/repo-fastapi
+# → 自动写入 patterns 表，supply `recommend` 的弹药
+
+# 2) 代码移植：把某个文件 + 它的 1-hop 内部 import 拆出来，外加 pip 依赖清单
+node bin/repo-inv extract /tmp/repo-fastapi fastapi/encoders.py --out ./vendor/encoder --max-hops 2
+# → 输出 EXTRACT.json 含 files/external_deps/stdlib_deps
+
+# 3) AI 排列组合：给 DeepSeek 一段任务描述 + 所有已索引仓库的目录，让它推荐
+#    "抄哪个仓库的哪个 pattern 的哪个文件，避开哪些 hotspot"
+node bin/repo-inv recommend "我要给 LLM agent 框架加上带重试和限流的 HTTP 调用层"
+# → 输出 5 段：首选仓库 / 核心可抄代码 / 可抄架构模式 / 风险陷阱 / 行动清单（含真实 repo-inv 命令）
+```
+
+模式规则可自定义：编辑 `rules/patterns.yml`（semgrep 语法），或用 `--rules <path>` 指定其他规则集。
+
 ### 单工具补救
 
 如果某层的关键工具在目标机器缺失，agent 应主动安装而不是绕开：

@@ -419,4 +419,251 @@ program
     console.log('');
   });
 
+// ── patterns ───────────────────────────────────────────────────────────────
+// Run curated semgrep rules to detect architectural patterns; persist to DB.
+program
+  .command('patterns <repo>')
+  .description('Scan repo for architectural patterns (retry, DI, plugin, cache, ...) and index them')
+  .option('--rules <path>', 'Override semgrep rules file', path.join(__dirname, '..', 'rules', 'patterns.yml'))
+  .option('--json', 'Emit raw JSON instead of table')
+  .action(async (repo, options) => {
+    const { spawnSync } = require('child_process');
+    const absRepo = path.resolve(repo);
+    if (!fs.existsSync(absRepo)) { console.error(chalk.red(`No such dir: ${absRepo}`)); process.exit(1); }
+    if (!fs.existsSync(options.rules)) { console.error(chalk.red(`Rules not found: ${options.rules}`)); process.exit(1); }
+
+    console.log(chalk.bold('🧬 Scanning for architectural patterns...'));
+    console.log(`   Target: ${chalk.cyan(absRepo)}`);
+    console.log(`   Rules:  ${chalk.gray(options.rules)}`);
+
+    const res = spawnSync('semgrep', [
+      '--config', options.rules, '--json', '-q', '--metrics', 'off',
+      '--exclude', 'node_modules', '--exclude', '.git', '--exclude', 'dist', '--exclude', 'build',
+      absRepo,
+    ], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
+    if (res.status !== 0 && !res.stdout) {
+      console.error(chalk.red(`semgrep failed: ${res.stderr}`));
+      process.exit(1);
+    }
+    const j = JSON.parse(res.stdout);
+    const grouped = {};
+    for (const r of j.results || []) {
+      const id = r.check_id.split('.').pop();
+      const cat = r.extra?.metadata?.category || 'unknown';
+      if (!grouped[id]) grouped[id] = { pattern: id, category: cat, hits: 0, sample_path: r.path, sample_line: r.start?.line };
+      grouped[id].hits += 1;
+    }
+    const list = Object.values(grouped).sort((a, b) => b.hits - a.hits);
+
+    if (options.json) {
+      console.log(JSON.stringify(list, null, 2));
+    } else {
+      console.log(chalk.bold(`\n📐 ${list.length} pattern(s) detected\n`));
+      const pad = (s, w) => String(s).padEnd(w);
+      console.log(chalk.gray(pad('PATTERN', 36) + pad('CATEGORY', 14) + pad('HITS', 6) + 'SAMPLE'));
+      console.log(chalk.gray('─'.repeat(100)));
+      for (const p of list) {
+        const sample = p.sample_path ? `${path.relative(absRepo, p.sample_path)}:${p.sample_line}` : '';
+        console.log(pad(p.pattern, 36) + pad(p.category, 14) + pad(p.hits, 6) + chalk.gray(sample));
+      }
+    }
+
+    // Persist into index (if this repo is indexed)
+    const name = path.basename(absRepo);
+    const existing = db.getRepoByName(name);
+    if (existing) {
+      db.savePatterns(existing.id, list);
+      console.log(chalk.green(`\n✅ Indexed ${list.length} patterns for #${existing.id} ${name}`));
+    } else {
+      console.log(chalk.yellow(`\n⚠️  Repo "${name}" not in index — run \`repo-inv analyze ${repo}\` first to persist patterns.`));
+    }
+  });
+
+// ── extract ────────────────────────────────────────────────────────────────
+// Copy a file + its 1-hop intra-repo Python imports into a dest dir, so the
+// user can transplant a piece of logic without dragging the whole repo.
+program
+  .command('extract <repo> <target>')
+  .description('Extract a file (or file:line) + its 1-hop intra-repo imports for transplant')
+  .option('-o, --out <dir>', 'Destination directory', './extracted')
+  .option('--max-hops <n>', 'Import resolution depth (default 1)', (v) => parseInt(v, 10), 1)
+  .action((repo, target, options) => {
+    const absRepo = path.resolve(repo);
+    if (!fs.existsSync(absRepo)) { console.error(chalk.red(`No such repo: ${absRepo}`)); process.exit(1); }
+
+    // target can be "path/to/file.py" or "path/to/file.py:123"
+    const [relTarget] = target.split(':');
+    const startFile = path.isAbsolute(relTarget) ? relTarget : path.resolve(absRepo, relTarget);
+    if (!fs.existsSync(startFile)) { console.error(chalk.red(`File not found: ${startFile}`)); process.exit(1); }
+
+    const outDir = path.resolve(options.out);
+    fs.mkdirSync(outDir, { recursive: true });
+
+    // BFS over Python imports, resolving "from X.Y import Z" / "import X.Y"
+    // to files within absRepo. Anything that doesn't resolve inside the repo
+    // is treated as an external dependency and recorded.
+    const visited = new Set();
+    const externalDeps = new Set();
+    const queue = [{ file: startFile, depth: 0 }];
+
+    function resolveImport(modulePath, fromFile) {
+      // Try to resolve a dotted module path to a file under absRepo.
+      const parts = modulePath.split('.');
+      // Walk up from fromFile to find any ancestor under absRepo that contains parts[0]
+      let dir = path.dirname(fromFile);
+      while (dir.startsWith(absRepo)) {
+        const cand1 = path.join(dir, ...parts) + '.py';
+        const cand2 = path.join(dir, ...parts, '__init__.py');
+        if (fs.existsSync(cand1)) return cand1;
+        if (fs.existsSync(cand2)) return cand2;
+        if (dir === absRepo) break;
+        dir = path.dirname(dir);
+      }
+      return null;
+    }
+
+    while (queue.length) {
+      const { file, depth } = queue.shift();
+      if (visited.has(file)) continue;
+      visited.add(file);
+      const src = fs.readFileSync(file, 'utf8');
+      if (depth >= options.maxHops) continue;
+      const importLines = src.split('\n').filter(l => /^\s*(from\s+\S+\s+import|import\s+)/.test(l));
+      for (const line of importLines) {
+        const m1 = line.match(/^\s*from\s+(\.*\S+)\s+import/);
+        const m2 = line.match(/^\s*import\s+(\S+)/);
+        const mod = (m1 && m1[1]) || (m2 && m2[1]);
+        if (!mod) continue;
+        if (mod.startsWith('.')) {
+          // relative import: resolve against current dir
+          const dots = mod.match(/^\.+/)[0].length;
+          let dir = path.dirname(file);
+          for (let i = 1; i < dots; i++) dir = path.dirname(dir);
+          const rest = mod.slice(dots).split('.').filter(Boolean);
+          const cand1 = path.join(dir, ...rest) + '.py';
+          const cand2 = path.join(dir, ...rest, '__init__.py');
+          if (fs.existsSync(cand1)) queue.push({ file: cand1, depth: depth + 1 });
+          else if (fs.existsSync(cand2)) queue.push({ file: cand2, depth: depth + 1 });
+          else externalDeps.add(mod);
+        } else {
+          const resolved = resolveImport(mod, file);
+          if (resolved) queue.push({ file: resolved, depth: depth + 1 });
+          else externalDeps.add(mod.split('.')[0]);
+        }
+      }
+    }
+
+    // Copy preserving repo-relative layout
+    for (const f of visited) {
+      const rel = path.relative(absRepo, f);
+      const dest = path.join(outDir, rel);
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.copyFileSync(f, dest);
+    }
+
+    // Filter stdlib from external deps so the list is useful for pip install
+    const STDLIB = new Set(['abc','argparse','asyncio','base64','collections','contextlib','copy','dataclasses','datetime','decimal','enum','functools','hashlib','heapq','inspect','io','ipaddress','itertools','json','logging','math','os','pathlib','pickle','queue','random','re','shutil','socket','string','struct','subprocess','sys','tempfile','threading','time','traceback','types','typing','unittest','urllib','uuid','warnings','weakref','xml','zipfile']);
+    const pipDeps = [...externalDeps].filter(d => !STDLIB.has(d)).sort();
+
+    const manifest = {
+      schema: 'repo-inv/extract@1',
+      source_repo: absRepo,
+      entry: path.relative(absRepo, startFile),
+      max_hops: options.maxHops,
+      files: [...visited].map(f => path.relative(absRepo, f)),
+      external_deps: pipDeps,
+      stdlib_deps: [...externalDeps].filter(d => STDLIB.has(d)).sort(),
+      extracted_at: new Date().toISOString(),
+    };
+    fs.writeFileSync(path.join(outDir, 'EXTRACT.json'), JSON.stringify(manifest, null, 2));
+
+    console.log(chalk.bold(`\n📦 Extracted ${visited.size} file(s) to ${outDir}`));
+    console.log(chalk.gray(`   Entry: ${manifest.entry}`));
+    console.log(chalk.gray(`   pip deps: ${pipDeps.join(', ') || '(none)'}`));
+    console.log(chalk.gray(`   stdlib:   ${manifest.stdlib_deps.join(', ') || '(none)'}`));
+    console.log(chalk.gray(`   Manifest: ${path.join(outDir, 'EXTRACT.json')}\n`));
+  });
+
+// ── recommend ──────────────────────────────────────────────────────────────
+// Ask DeepSeek: given a task, which indexed repos / patterns / hotspots should
+// I study to copy-paste-with-thinking?
+program
+  .command('recommend <task...>')
+  .description('Ask DeepSeek to recommend which indexed repos/patterns/funcs to study for a task')
+  .option('-m, --model <name>', 'DeepSeek model', 'deepseek-chat')
+  .action(async (taskParts, options) => {
+    loadEnvFromFile(path.join(__dirname, '..', '.env'));
+    const apiKey = process.env.DEEPSEEK_API_KEY;
+    if (!apiKey) { console.error(chalk.red('❌ DEEPSEEK_API_KEY not set in .env')); process.exit(1); }
+
+    const task = taskParts.join(' ');
+    const catalog = db.catalogForPrompt();
+    if (catalog.length === 0) { console.error(chalk.red('No repos indexed yet.')); process.exit(1); }
+
+    console.log(chalk.bold('🎯 Asking DeepSeek for recommendations...'));
+    console.log(`   Task:    ${chalk.cyan(task)}`);
+    console.log(`   Catalog: ${chalk.yellow(catalog.length)} indexed repo(s)`);
+
+    const compactCatalog = catalog.map(r => ({
+      name: r.name,
+      lang: r.primary_lang,
+      loc: r.total_code,
+      max_ccn: r.lizard_max_ccn,
+      quality: { semgrep_err: r.semgrep_error, bandit_high: r.bandit_high, pyright_err: r.pyright_errors },
+      patterns: r.patterns.map(p => `${p.pattern}×${p.hits}`),
+      hotspots: r.hotspots.map(h => `${h.location} (CCN ${h.ccn})`),
+      learnings_excerpt: r.learnings_excerpt.slice(0, 800),
+    }));
+
+    const prompt = `用户任务："${task}"
+
+下面是已索引开源仓库的目录（每条含语言/规模/质量/检测到的架构模式/复杂度热点/AI 提炼的学习摘要）。请像"开源代码考古学家"一样输出**抄作业指南**：
+
+1. **首选参考仓库**（按相关度排序 1-3 个）：说明为什么这个仓库的方案最匹配该任务
+2. **核心可抄代码**：精确到 \`仓库:文件:函数\`，告诉用户重点读哪些 hotspot
+3. **可抄架构模式**：从 patterns 列表里挑出可以"排列组合"借用的（写明从哪个仓库的哪个 pattern 借哪个思路）
+4. **风险/陷阱**：哪些仓库虽然相关但质量差不建议抄、哪些 hotspot 复杂度过高需要重构后再用
+5. **行动清单**：3-5 条具体命令/步骤，**只允许使用下列真实命令**：
+   - \`repo-inv extract <repo-path> <file-relative-path> --out <dir> [--max-hops N]\`
+   - \`repo-inv compare <repoA-name> <repoB-name>\`
+   - \`repo-inv search "<fts5-query>" [--lang X] [--max-ccn N]\`
+   - \`repo-inv patterns <repo-path>\`
+   不要发明不存在的子命令或参数。
+
+规则：
+- 必须基于目录里的真实数据，禁止幻觉仓库或文件名
+- 引用具体数字（hits、CCN、LOC）做依据
+- 中文 Markdown，700-1000 字
+
+=== 目录 ===
+${JSON.stringify(compactCatalog, null, 2)}
+`;
+
+    try {
+      const resp = await fetch('https://api.deepseek.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model: options.model,
+          messages: [
+            { role: 'system', content: '你是资深开源代码考古学家，擅长跨仓库为某个具体任务挑选最佳"抄作业"路径。' },
+            { role: 'user', content: prompt },
+          ],
+          temperature: 0.3,
+        }),
+      });
+      if (!resp.ok) {
+        console.error(chalk.red(`❌ DeepSeek error: ${resp.status}`));
+        console.error(await resp.text());
+        process.exit(1);
+      }
+      const data = await resp.json();
+      const content = data.choices?.[0]?.message?.content || '';
+      console.log('\n' + content + '\n');
+    } catch (err) {
+      console.error(chalk.red(`❌ ${err.message}`));
+      process.exit(1);
+    }
+  });
+
 program.parse();

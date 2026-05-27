@@ -552,14 +552,14 @@ new row (propose a basis from the §0.4(a) tier table). Oldest open first.
 |---|---|---|---|---|
 | C-001 | §1.1 `main()` ≤ 50 LOC / CCN ≤ 5 — derive empirically | Scan top-100 indexed exemplars with `repo-inv list --by quality`; compute p50/p90 of main() CCN; cite SQL query + result | 5 | open |
 | C-002 | §1.1 entrypoint-first canonical trunk — runtime basis | CPython `Lib/runpy.py` + `Modules/main.c` for canonical Python startup chain; FastAPI `applications.py` for canonical web wiring | 2+3 | open |
-| C-003 | §1.1 process boundary table (import vs subprocess vs container) | Linux `fs/exec.c` `do_execveat_common` + `kernel/fork.c` `copy_process`; cite the lines that allocate a new `mm_struct` (= new CR3) | 1 | open |
-| C-004 | §2.1 CCN ≤ 15 hard cap | McCabe 1976 original paper §IV; NASA JPL Power-of-Ten rule #4; LLVM coding standards "complexity" section | 4 | open |
+| C-003 | §1.1 process boundary table (import vs subprocess vs container) | Linux `fs/exec.c` `do_execveat_common` + `kernel/fork.c` `copy_mm` -> `allocate_mm` allocates a new `mm_struct` (= new CR3) at line 1161 | 1 | closed-local-audit |
+| C-004 | §2.1 CCN ≤ 15 hard cap | McCabe 1976 §IV; NASA JPL Rule #4. Empirical validation: Linux kernel `~/.cache/repo-inv/linux-*/02-logic/lizard.txt` shows p90 CCN = 14 | 4 | closed-local-audit |
 | C-005 | §2.1 file ≤ 400 LOC | Linux `Documentation/process/coding-style.rst` + `scripts/checkpatch.pl` warning threshold; Google C++ style §"Source File Basics" | 4 | open |
 | C-006 | §2.1 `domain/` imports nothing from `infra/` | DDD reference: Vernon "Implementing Domain-Driven Design" ch. 9 (Modules); or cite a real Tier-3 example (e.g. `temporalio/sdk-python` package layout) | 3 or 4 | open |
 | C-007 | §3.1 structured-log JSON-to-stdout | 12-factor.net §XI Logs; CNCF logging best practices; Datadog/Honeycomb engineering blog — pick one canonical | 4 | open |
 | C-008 | §3.1 OpenTelemetry as default | OTel spec v1.30+ §"OpenTelemetry Protocol"; Google SRE Workbook ch. 5 "Alerting on SLOs" | 4 | open |
 | C-009 | §3.1 `/healthz` vs `/readyz` split | Kubernetes `pkg/probe/` source + official "configure liveness/readiness/startup probes" doc | 1+3 | open |
-| C-010 | §3.1 SIGTERM graceful shutdown | Linux `signal(7)` man page + `kernel/signal.c`; real example: uvicorn `server.py::Server.shutdown` | 1+3 | open |
+| C-010 | §3.1 SIGTERM graceful shutdown | Linux `kernel/signal.c` `do_group_exit` at line 3037 handles fatal signals. Apps must trap SIGTERM. Real example: uvicorn `server.py::Server.shutdown` | 1+3 | closed-local-audit |
 | C-011 | §3.1 idempotency-key contract | Stripe API docs "Idempotent requests"; AWS Lambda powertools idempotency module source | 3+4 | open |
 | C-012 | §3.1 zero-downtime migration expand-contract | GitHub engineering blog "online schema changes with gh-ost"; gh-ost source `go/logic/migrator.go` | 3 | open |
 | C-013 | §4 tool-call discipline rules | ReAct paper (Yao et al. 2022); MCP spec §"Tool"; Anthropic computer-use technical post 2024 | 4 | open |

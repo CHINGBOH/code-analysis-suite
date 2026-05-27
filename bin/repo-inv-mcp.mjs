@@ -11,6 +11,8 @@
 //   - extract_code        : copy file + 1-hop intra-repo imports to a dest dir
 //   - analyze_repo        : run a fresh analyze and index it
 //   - recommend           : DeepSeek-powered "which repo to copy from for task X"
+//   - borrow_guide        : heuristic learning targets and borrowable wheels
+//   - project_review      : architecture/skeleton/business review for own repos
 //
 // Wire into any MCP client (Claude Code / Cursor / Codex / Gemini / Copilot)
 // by running once:  repo-inv install-mcp <host>
@@ -28,6 +30,8 @@ import fs from 'node:fs';
 const require = createRequire(import.meta.url);
 const db = require('../lib/db.js');
 const { loadEnvFromFile } = require('../lib/env.js');
+const { buildStandardGuide, buildBorrowGuide, buildProjectReview } = require('../lib/insights.js');
+const { dissectRepo } = require('../lib/anatomy.js');
 const SUITE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = path.join(SUITE_ROOT, 'bin', 'repo-inv');
 
@@ -120,17 +124,97 @@ const TOOLS = [
       properties: {
         repo_path: { type: 'string', description: 'Absolute path to repo' },
         parallel: { type: 'boolean', default: true },
-        layer: { type: 'string', description: 'Comma-separated subset of arch,logic,efficiency', default: 'all' },
+        layer: { type: 'string', description: 'Comma-separated subset of anatomy,arch,logic,efficiency', default: 'all' },
+        profile: { type: 'string', enum: ['generic', 'pure_agent', 'rag_agent', 'crm_agent'], default: 'generic' },
       },
     },
   },
   {
-    name: 'recommend',
-    description: 'Ask DeepSeek (using the full indexed catalog) which repos/files/patterns to copy from for a given user task. Returns markdown with citations.',
+    name: "recommend",
+    description: "Ask DeepSeek (using the full indexed catalog) which repos/files/patterns to copy from for a given user task. Returns markdown with citations.",
     inputSchema: {
-      type: 'object',
-      required: ['task'],
-      properties: { task: { type: 'string', description: 'What the user wants to build / port / understand' } },
+      type: "object",
+      required: ["task"],
+      properties: { task: { type: "string", description: "What the user wants to build / port / understand" } },
+    },
+  },
+  {
+    name: "get_standard_architecture",
+    description: "Return the standard entrypoint-first project architecture used to audit repos.",
+    inputSchema: { type: "object", properties: { profile: { type: "string", enum: ["generic", "pure_agent", "rag_agent", "crm_agent"], default: "generic" } } },
+  },
+  {
+    name: "dissect_repo",
+    description: "Dissect repo into deployable units, entrypoints, interfaces, business-flow trunks, and architecture shape.",
+    inputSchema: {
+      type: "object",
+      required: ["repo_path"],
+      properties: { repo_path: { type: "string", description: "Absolute path to repo" }, profile: { type: "string", enum: ["generic", "pure_agent", "rag_agent", "crm_agent"], default: "generic" } },
+    },
+  },
+  {
+    name: "get_entrypoints",
+    description: "Return entrypoint/main-trunk candidates for a repo.",
+    inputSchema: {
+      type: "object",
+      required: ["repo_path"],
+      properties: { repo_path: { type: "string", description: "Absolute path to repo" } },
+    },
+  },
+  {
+    name: "get_deployable_units",
+    description: "Return inferred deployable units for a repo.",
+    inputSchema: {
+      type: "object",
+      required: ["repo_path"],
+      properties: { repo_path: { type: "string", description: "Absolute path to repo" } },
+    },
+  },
+  {
+    name: "get_business_flows",
+    description: "Return heuristic entrypoint-to-business-flow trunks for a repo.",
+    inputSchema: {
+      type: "object",
+      required: ["repo_path"],
+      properties: { repo_path: { type: "string", description: "Absolute path to repo" } },
+    },
+  },
+  {
+    name: "audit_project",
+    description: "Audit an indexed user project/report against a target architecture trunk.",
+    inputSchema: {
+      type: "object",
+      required: ["repo_or_report"],
+      properties: {
+        repo_or_report: { type: "string", description: "Indexed repo name, repo path, or report directory containing report.json" },
+        against: { type: "string", description: "Optional indexed excellent repo name to compare against" },
+        profile: { type: "string", enum: ["generic", "pure_agent", "rag_agent", "crm_agent"], default: "generic" },
+      },
+    },
+  },
+  {
+    name: "borrow_guide",
+    description: "Heuristic guide for choosing indexed excellent repos, borrowable wheels, patterns, and hotspots for a topic.",
+    inputSchema: {
+      type: "object",
+      required: ["topic"],
+      properties: {
+        topic: { type: "string", description: "Architecture, skeleton, business flow, or wheel topic to learn/copy from" },
+        limit: { type: "integer", default: 5 },
+      },
+    },
+  },
+  {
+    name: "project_review",
+    description: "Review an indexed user project/report for architecture, skeleton, business logic, and copy risk.",
+    inputSchema: {
+      type: "object",
+      required: ["repo_or_report"],
+      properties: {
+        repo_or_report: { type: "string", description: "Indexed repo name, repo path, or report directory containing report.json" },
+        against: { type: "string", description: "Optional indexed excellent repo name to compare against" },
+        profile: { type: "string", enum: ["generic", "pure_agent", "rag_agent", "crm_agent"], default: "generic" },
+      },
     },
   },
 ];
@@ -209,6 +293,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         const cliArgs = ['analyze', args.repo_path];
         if (args.parallel !== false) cliArgs.push('--parallel');
         if (args.layer && args.layer !== 'all') cliArgs.push('--layer', args.layer);
+        if (args.profile) cliArgs.push('--profile', args.profile);
         const out = runCli(cliArgs);
         return textResult(`status=${out.status}\n\n${out.stdout}\n${out.stderr}`);
       }
@@ -216,6 +301,42 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       case 'recommend': {
         const out = runCli(['recommend', args.task]);
         return textResult(out.stdout || out.stderr);
+      }
+
+      case "get_standard_architecture":
+        return textResult(buildStandardGuide(args.profile || "generic"));
+
+      case "dissect_repo":
+        return jsonResult(dissectRepo(args.repo_path, args.profile || "generic"));
+
+      case "get_entrypoints": {
+        const anatomy = dissectRepo(args.repo_path, args.profile || "generic");
+        return jsonResult({ repo: anatomy.repo, architecture_shape: anatomy.architecture_shape, entrypoints: anatomy.entrypoints });
+      }
+
+      case "get_deployable_units": {
+        const anatomy = dissectRepo(args.repo_path, args.profile || "generic");
+        return jsonResult({ repo: anatomy.repo, architecture_shape: anatomy.architecture_shape, deployable_units: anatomy.deployable_units });
+      }
+
+      case "get_business_flows": {
+        const anatomy = dissectRepo(args.repo_path, args.profile || "generic");
+        return jsonResult({ repo: anatomy.repo, architecture_shape: anatomy.architecture_shape, business_flows: anatomy.business_flows });
+      }
+
+      case "audit_project": {
+        const result = buildProjectReview(args.repo_or_report, { against: args.against, profile: args.profile });
+        return textResult(result.markdown);
+      }
+
+      case "borrow_guide": {
+        const result = buildBorrowGuide(args.topic, { limit: args.limit || 5 });
+        return textResult(result.markdown);
+      }
+
+      case "project_review": {
+        const result = buildProjectReview(args.repo_or_report, { against: args.against, profile: args.profile });
+        return textResult(result.markdown);
       }
 
       default:

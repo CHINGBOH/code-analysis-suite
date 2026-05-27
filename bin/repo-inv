@@ -6,8 +6,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { listTools, getTool, checkTool } = require('../lib/tools');
-const { runArchitecture, runLogic, runEfficiency, generateSummary } = require('../lib/runner');
+const { runAnatomy, runArchitecture, runLogic, runEfficiency, generateSummary } = require('../lib/runner');
 const db = require('../lib/db');
+const { buildStandardGuide, buildBorrowGuide, buildProjectReview } = require('../lib/insights');
 
 const program = new Command();
 
@@ -27,9 +28,10 @@ program
 program
   .command('analyze <repo>')
   .description('Run investigation on a repository')
-  .option('-l, --layer <layers>', 'Layers to run: arch,logic,efficiency (default: all)', 'all')
+  .option('-l, --layer <layers>', 'Layers to run: anatomy,arch,logic,efficiency (default: all)', 'all')
   .option('-o, --output <dir>', 'Output directory (default: ~/.cache/repo-inv/<repo>-<ts>)')
   .option('-p, --parallel', 'Run the three layers concurrently (~3x faster, interleaved logs)')
+  .option('--profile <name>', 'Architecture standard profile: generic,pure_agent,rag_agent,crm_agent', 'generic')
   .action(async (repo, options) => {
     const absRepo = path.resolve(repo);
     if (!fs.existsSync(absRepo)) {
@@ -49,8 +51,9 @@ program
     console.log(`   Output: ${chalk.cyan(absOut)}`);
     console.log(`   Layers: ${chalk.yellow(options.layer)}${options.parallel ? chalk.magenta(' [parallel]') : ''}`);
 
-    const layers = options.layer === 'all' ? ['arch', 'logic', 'efficiency'] : options.layer.split(',');
+    const layers = options.layer === 'all' ? ['anatomy', 'arch', 'logic', 'efficiency'] : options.layer.split(',');
     const runners = {
+      anatomy: () => runAnatomy(absRepo, absOut, { profile: options.profile }),
       arch: () => runArchitecture(absRepo, absOut),
       logic: () => runLogic(absRepo, absOut),
       efficiency: () => runEfficiency(absRepo, absOut),
@@ -72,6 +75,41 @@ program
       console.error(chalk.yellow(`   ⚠️  Index update failed: ${err.message}`));
     }
     console.log(chalk.green(`\n✅ Done. Report: ${path.join(absOut, 'SUMMARY.md')}`));
+  });
+
+program
+  .command("standard")
+  .description("Show the standard entrypoint-first project architecture used for audits")
+  .option("-o, --output <file>", "Write markdown standard to a file")
+  .option("--profile <name>", "Architecture standard profile: generic,pure_agent,rag_agent,crm_agent", "generic")
+  .action((options) => {
+    const md = buildStandardGuide(options.profile);
+    if (options.output) {
+      const out = path.resolve(options.output);
+      fs.mkdirSync(path.dirname(out), { recursive: true });
+      fs.writeFileSync(out, md);
+      console.log(chalk.green("Standard architecture written to " + out));
+    } else {
+      console.log(md);
+    }
+  });
+
+program
+  .command("dissect <repo>")
+  .description("Dissect entrypoint trunks, deployable units, interfaces, and business-flow skeletons")
+  .option("-o, --output <dir>", "Output directory (default: ~/.cache/repo-inv/<repo>-<ts>)")
+  .option("--profile <name>", "Architecture standard profile: generic,pure_agent,rag_agent,crm_agent", "generic")
+  .action(async (repo, options) => {
+    const absRepo = path.resolve(repo);
+    if (!fs.existsSync(absRepo) || !fs.statSync(absRepo).isDirectory()) {
+      console.error(chalk.red("Error: " + absRepo + " is not a directory"));
+      process.exit(1);
+    }
+    const absOut = path.resolve(options.output || defaultOutputFor(absRepo));
+    fs.mkdirSync(absOut, { recursive: true });
+    const anatomy = await runAnatomy(absRepo, absOut, { profile: options.profile });
+    console.log(chalk.green("\nDone. Anatomy: " + path.join(absOut, "00-anatomy", "ANATOMY.md")));
+    console.log(chalk.gray("   Shape: " + anatomy.architecture_shape));
   });
 
 program
@@ -406,6 +444,78 @@ program
     console.log(chalk.bold(`\nTop hotspots — ${b.name}:`));
     for (const h of (b.hotspots || []).slice(0, 5)) console.log(`  CCN ${pad(h.ccn, 4)} ${h.location}`);
     console.log('');
+  });
+
+// ── borrow ─────────────────────────────────────────────────────────────────
+// Heuristic guide for choosing indexed excellent repos, patterns, and hotspots
+// worth learning from or extracting as small wheels.
+program
+  .command("borrow <topic...>")
+  .description("Find learning targets and borrowable wheels from indexed excellent repos")
+  .option("-o, --output <file>", "Write markdown guide to a file")
+  .option("--limit <n>", "Max repositories to include", (v) => parseInt(v, 10), 5)
+  .action((topicParts, options) => {
+    const topic = topicParts.join(" ").trim();
+    const result = buildBorrowGuide(topic, { limit: options.limit });
+    if (options.output) {
+      const out = path.resolve(options.output);
+      fs.mkdirSync(path.dirname(out), { recursive: true });
+      fs.writeFileSync(out, result.markdown);
+      console.log(chalk.green("Borrow guide written to " + out));
+    } else {
+      console.log(result.markdown);
+    }
+  });
+
+// ── review ─────────────────────────────────────────────────────────────────
+// Review a user project from an existing repo-inv report/index row. This is
+// the second half of the workflow: test personal code against learned patterns.
+program
+  .command("review <repoOrReport>")
+  .description("Review your own indexed project for architecture, skeleton, business logic, and copy risk")
+  .option("--against <repo>", "Name of an indexed excellent repo to compare against")
+  .option("-o, --output <file>", "Write markdown review to a file")
+  .option("--profile <name>", "Architecture standard profile: generic,pure_agent,rag_agent,crm_agent", "generic")
+  .action((repoOrReport, options) => {
+    try {
+      const result = buildProjectReview(repoOrReport, { against: options.against, profile: options.profile });
+      if (options.output) {
+        const out = path.resolve(options.output);
+        fs.mkdirSync(path.dirname(out), { recursive: true });
+        fs.writeFileSync(out, result.markdown);
+        console.log(chalk.green("Project review written to " + out));
+      } else {
+        console.log(result.markdown);
+      }
+    } catch (err) {
+      console.error(chalk.red("ERROR " + err.message));
+      process.exit(1);
+    }
+  });
+
+// ── audit ──────────────────────────────────────────────────────────────────
+// Alias with the new product language: audit user projects against a target trunk.
+program
+  .command("audit <repoOrReport>")
+  .description("Audit your own indexed project against a target architecture trunk")
+  .option("--against <repo>", "Name of an indexed excellent repo to compare against")
+  .option("-o, --output <file>", "Write markdown audit to a file")
+  .option("--profile <name>", "Architecture standard profile: generic,pure_agent,rag_agent,crm_agent", "generic")
+  .action((repoOrReport, options) => {
+    try {
+      const result = buildProjectReview(repoOrReport, { against: options.against, profile: options.profile });
+      if (options.output) {
+        const out = path.resolve(options.output);
+        fs.mkdirSync(path.dirname(out), { recursive: true });
+        fs.writeFileSync(out, result.markdown);
+        console.log(chalk.green("Project audit written to " + out));
+      } else {
+        console.log(result.markdown);
+      }
+    } catch (err) {
+      console.error(chalk.red("ERROR " + err.message));
+      process.exit(1);
+    }
   });
 
 // ── patterns ───────────────────────────────────────────────────────────────

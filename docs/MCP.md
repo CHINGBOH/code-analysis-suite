@@ -1,7 +1,7 @@
 # MCP integration
 
 `code_analysis_suite` ships a stdio MCP server (`repo-inv-mcp`) that exposes the
-suite's capabilities as 9 tools any MCP-capable agent can call without shelling out.
+suite's capabilities as 17 tools any MCP-capable agent can call without shelling out.
 
 ## One command, every host
 
@@ -29,7 +29,7 @@ already stored — are preserved verbatim.
 | `claude-code` | n/a — wraps `claude mcp add` | CLI call | Anthropic Claude Code |
 | `hermes` | (prints template) | manual | User maps to their loader |
 
-## The 9 tools
+## The 17 tools
 
 | Tool | Args | Returns |
 |---|---|---|
@@ -42,6 +42,14 @@ already stored — are preserved verbatim.
 | `extract_code` | `repo`, `file`, `out`, `max_hops?` | file + 1-hop imports + dep manifest |
 | `analyze_repo` | `path`, `layers?`, `parallel?` | runs `repo-inv analyze`, returns paths (long) |
 | `recommend` | `task` (free text) | DeepSeek picks best repos/files to copy from |
+| `get_standard_architecture` | `profile?` | Standard architecture benchmark for generic/pure-agent/RAG-agent/CRM-agent |
+| `dissect_repo` | `repo_path`, `profile?` | Full entrypoint-first anatomy model |
+| `get_entrypoints` | `repo_path` | Entrypoint/main-trunk candidates |
+| `get_deployable_units` | `repo_path` | Inferred deployable units |
+| `get_business_flows` | `repo_path` | Heuristic entrypoint-to-business-flow trunks |
+| `audit_project` | `repo_or_report`, `against?`, `profile?` | Audit own project against a target trunk |
+| `borrow_guide` | `topic`, `limit?` | Heuristic learning targets and borrowable wheels |
+| `project_review` | `repo_or_report`, `against?` | Architecture/skeleton/business review of your own indexed project |
 
 ## Manual config (if `install-mcp` doesn't fit your host)
 

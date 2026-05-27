@@ -1,0 +1,338 @@
+# cpython-pitfalls.yml — semgrep rules distilled from the
+# `cpython-idiomatic-patterns` skill notes
+# (~/.copilot/skills/cpython-idiomatic-patterns/modules/*.md).
+#
+# These are wtfpython-style gotchas that come from misusing the stdlib,
+# not from interpreter quirks. Each rule references the module note that
+# documents the pitfall in detail.
+#
+# Severity convention (same as wtfpython.yml):
+#   ERROR    — almost-always-a-bug
+#   WARNING  — usually-a-bug or measurable perf footgun
+#   INFO     — style / modernization smell
+
+rules:
+  # ── 1. dataclass mutable default ────────────────────────────────────────
+  # modules/dataclasses.md "陷阱"
+  - id: cpy-dataclass-mutable-default
+    message: |
+      Mutable default on a @dataclass field — actually raises ValueError at
+      class-creation time for list/dict/set, but tuple/custom-mutable slip
+      through and become shared state.
+      Fix: `field(default_factory=list)` (or `tuple` / `frozenset` / your own
+      factory). See modules/dataclasses.md.
+    languages: [python]
+    severity: ERROR
+    metadata: { category: correctness, source: cpython-pitfalls }
+    patterns:
+      - pattern-inside: |
+          @dataclass
+          class $C:
+              ...
+      - pattern-either:
+          - pattern: "$X: $T = []"
+          - pattern: "$X: $T = {}"
+          - pattern: "$X: $T = set()"
+          - pattern: "$X: $T = dict()"
+          - pattern: "$X: $T = list()"
+
+  # ── 2. lru_cache on instance method (memory leak) ───────────────────────
+  # modules/functools.md "陷阱": cache holds `self`, instance never GC'd
+  - id: cpy-lru-cache-on-method
+    message: |
+      `@functools.lru_cache` / `@functools.cache` on an instance method keeps
+      `self` alive for the lifetime of the class — every cached instance leaks.
+      Fix: cache at module scope, or use `functools.cached_property`, or
+      `@lru_cache` on a free function that takes the relevant args.
+      See modules/functools.md.
+    languages: [python]
+    severity: WARNING
+    metadata: { category: correctness, source: cpython-pitfalls }
+    patterns:
+      - pattern-either:
+          - pattern: |
+              class $C:
+                  ...
+                  @functools.lru_cache(...)
+                  def $M(self, ...):
+                      ...
+          - pattern: |
+              class $C:
+                  ...
+                  @lru_cache(...)
+                  def $M(self, ...):
+                      ...
+          - pattern: |
+              class $C:
+                  ...
+                  @functools.cache
+                  def $M(self, ...):
+                      ...
+          - pattern: |
+              class $C:
+                  ...
+                  @cache
+                  def $M(self, ...):
+                      ...
+
+  # ── 3. decorator without @functools.wraps ───────────────────────────────
+  # modules/functools.md — without @wraps, __name__/__doc__/__wrapped__ vanish
+  - id: cpy-decorator-missing-wraps
+    message: |
+      Decorator without `@functools.wraps(fn)` — wrapper loses __name__,
+      __doc__, __qualname__, __wrapped__; breaks introspection, pickling,
+      `inspect.signature` unwrap chain.
+      Fix: `@functools.wraps(fn)` on the inner wrapper.
+      See modules/functools.md & modules/inspect.md.
+    languages: [python]
+    severity: INFO
+    metadata: { category: maintainability, source: cpython-pitfalls }
+    pattern: |
+      def $DECO($FN):
+          def $WRAPPER(...):
+              ...
+              return $FN(...)
+          return $WRAPPER
+    pattern-not: |
+      def $DECO($FN):
+          @functools.wraps($FN)
+          def $WRAPPER(...):
+              ...
+          return $WRAPPER
+
+  # ── 4. logging with f-string (eager eval, even when level disabled) ─────
+  # modules/logging.md "陷阱"
+  - id: cpy-logging-fstring
+    message: |
+      `logger.debug(f"...")` evaluates the f-string before deciding whether
+      DEBUG level is enabled. In hot paths this can be the dominant cost.
+      Fix: pass args separately — `logger.debug("user=%s", user)`.
+      See modules/logging.md.
+    languages: [python]
+    severity: WARNING
+    metadata: { category: performance, source: cpython-pitfalls }
+    patterns:
+      - pattern-either:
+          - pattern: $LOGGER.debug(f"...")
+          - pattern: $LOGGER.info(f"...")
+          - pattern: $LOGGER.warning(f"...")
+          - pattern: $LOGGER.error(f"...")
+          - pattern: $LOGGER.critical(f"...")
+          - pattern: $LOGGER.exception(f"...")
+          - pattern: logging.debug(f"...")
+          - pattern: logging.info(f"...")
+          - pattern: logging.warning(f"...")
+          - pattern: logging.error(f"...")
+          - pattern: logging.critical(f"...")
+          - pattern: logging.exception(f"...")
+
+  # ── 5. asyncio.get_event_loop() (deprecated since 3.10) ─────────────────
+  # modules/asyncio.md
+  - id: cpy-asyncio-get-event-loop
+    message: |
+      `asyncio.get_event_loop()` is deprecated (3.10+) outside a running loop
+      and will raise DeprecationWarning → RuntimeError in future versions.
+      Fix: top-level entry → `asyncio.run(main())`; inside a coroutine →
+      `asyncio.get_running_loop()`.
+      See modules/asyncio.md.
+    languages: [python]
+    severity: WARNING
+    metadata: { category: correctness, source: cpython-pitfalls }
+    pattern: asyncio.get_event_loop()
+
+  # ── 6. blocking time.sleep inside async function ────────────────────────
+  # modules/asyncio.md — blocks the event loop, kills throughput
+  - id: cpy-asyncio-blocking-sleep
+    message: |
+      `time.sleep()` inside `async def` blocks the entire event loop.
+      Fix: `await asyncio.sleep(...)`.
+      See modules/asyncio.md.
+    languages: [python]
+    severity: ERROR
+    metadata: { category: correctness, source: cpython-pitfalls }
+    patterns:
+      - pattern-inside: |
+          async def $F(...):
+              ...
+      - pattern: time.sleep(...)
+
+  # ── 7. argparse type=bool (always True for non-empty string) ────────────
+  # modules/argparse.md
+  - id: cpy-argparse-type-bool
+    message: |
+      `add_argument(..., type=bool)` calls `bool("False")` which is True.
+      Fix: use `action='store_true'` / `'store_false'`, or a custom converter
+      that handles "true"/"false"/"1"/"0".
+      See modules/argparse.md.
+    languages: [python]
+    severity: ERROR
+    metadata: { category: correctness, source: cpython-pitfalls }
+    patterns:
+      - pattern-either:
+          - pattern: $P.add_argument(..., type=bool, ...)
+          - pattern: $P.add_argument(..., type=bool)
+
+  # ── 8. subprocess shell=True with formatted command (injection) ─────────
+  # modules/subprocess.md "陷阱"
+  - id: cpy-subprocess-shell-injection
+    message: |
+      `shell=True` combined with an f-string / .format / + concatenation lets
+      any user-controlled value run arbitrary shell commands.
+      Fix: drop `shell=True` and pass a list of args, or use `shlex.quote()`
+      if the shell really is required.
+      See modules/subprocess.md.
+    languages: [python]
+    severity: ERROR
+    metadata: { category: security, source: cpython-pitfalls }
+    patterns:
+      - pattern-either:
+          - pattern: subprocess.run(f"...", ..., shell=True, ...)
+          - pattern: subprocess.run(f"...", shell=True)
+          - pattern: subprocess.Popen(f"...", ..., shell=True, ...)
+          - pattern: subprocess.Popen(f"...", shell=True)
+          - pattern: subprocess.call(f"...", ..., shell=True, ...)
+          - pattern: subprocess.check_call(f"...", ..., shell=True, ...)
+          - pattern: subprocess.check_output(f"...", ..., shell=True, ...)
+          - pattern: subprocess.run($S + $X, ..., shell=True, ...)
+          - pattern: subprocess.run("{...}".format(...), ..., shell=True, ...)
+
+  # ── 9. subprocess.call / check_output (legacy API) ──────────────────────
+  # modules/subprocess.md — subprocess.run() replaces them since 3.5
+  - id: cpy-subprocess-legacy-call
+    message: |
+      `subprocess.call` / `check_call` / `check_output` are legacy wrappers
+      around `Popen`. Use `subprocess.run(..., check=True, capture_output=True,
+      text=True)` for full control and consistent return types.
+      See modules/subprocess.md.
+    languages: [python]
+    severity: INFO
+    metadata: { category: modernization, source: cpython-pitfalls }
+    patterns:
+      - pattern-either:
+          - pattern: subprocess.call(...)
+          - pattern: subprocess.check_call(...)
+          - pattern: subprocess.check_output(...)
+
+  # ── 10. exec(open(...).read()) — abuse of import system ─────────────────
+  # modules/importlib.md "陷阱"
+  - id: cpy-exec-source-as-import
+    message: |
+      `exec(open(path).read())` runs arbitrary code in the current scope —
+      no module isolation, no sys.modules registration, breaks reload/pickle
+      and is an obvious injection sink.
+      Fix: `importlib.util.spec_from_file_location` +
+      `importlib.util.module_from_spec` + `spec.loader.exec_module(mod)`.
+      See modules/importlib.md.
+    languages: [python]
+    severity: ERROR
+    metadata: { category: security, source: cpython-pitfalls }
+    patterns:
+      - pattern-either:
+          - pattern: exec(open(...).read())
+          - pattern: exec(open(...).read(), ...)
+          - pattern: |
+              with open(...) as $F:
+                  exec($F.read())
+
+  # ── 11. __import__("a.b") returns "a", not "a.b" ────────────────────────
+  # modules/importlib.md "陷阱"
+  - id: cpy-dunder-import-dotted
+    message: |
+      `__import__("a.b")` returns the top-level package `a`, not the submodule
+      `a.b` — counter-intuitive and almost always a bug.
+      Fix: `importlib.import_module("a.b")` returns `a.b`.
+      See modules/importlib.md.
+    languages: [python]
+    severity: WARNING
+    metadata: { category: correctness, source: cpython-pitfalls }
+    patterns:
+      - pattern: __import__($NAME)
+      - metavariable-regex:
+          metavariable: $NAME
+          regex: '["''][^"'']*\.[^"'']*["'']'
+
+  # ── 12. typing: pre-PEP-585 generics still in fresh code ────────────────
+  # modules/typing.md — on 3.9+ prefer `list[int]` over `List[int]`
+  - id: cpy-typing-legacy-generic
+    message: |
+      `typing.List` / `Dict` / `Tuple` / `Set` / `FrozenSet` / `Type` /
+      `Optional` are deprecated as generic aliases since 3.9 (PEP 585) and
+      `Optional[X]` is verbose vs. `X | None` since 3.10 (PEP 604).
+      Fix: use built-in generics — `list[int]`, `dict[str, int]`,
+      `tuple[int, ...]`, `X | None`.
+      See modules/typing.md.
+    languages: [python]
+    severity: INFO
+    metadata: { category: modernization, source: cpython-pitfalls }
+    patterns:
+      - pattern-either:
+          - pattern: typing.List[...]
+          - pattern: typing.Dict[...]
+          - pattern: typing.Tuple[...]
+          - pattern: typing.Set[...]
+          - pattern: typing.FrozenSet[...]
+          - pattern: typing.Type[...]
+          - pattern: typing.Optional[...]
+
+  # ── 13. ThreadPoolExecutor / ProcessPoolExecutor outside `with` ─────────
+  # modules/concurrent-futures.md — easy to forget shutdown → thread leak
+  - id: cpy-executor-no-with
+    message: |
+      `ThreadPoolExecutor` / `ProcessPoolExecutor` constructed outside a
+      `with` block can leak worker threads/processes on exception.
+      Fix: `with ThreadPoolExecutor(...) as ex: ...`.
+      See modules/concurrent-futures.md.
+    languages: [python]
+    severity: WARNING
+    metadata: { category: resource-leak, source: cpython-pitfalls }
+    patterns:
+      - pattern-either:
+          - pattern: $E = ThreadPoolExecutor(...)
+          - pattern: $E = ProcessPoolExecutor(...)
+          - pattern: $E = concurrent.futures.ThreadPoolExecutor(...)
+          - pattern: $E = concurrent.futures.ProcessPoolExecutor(...)
+    pattern-not-inside: |
+      with $E as ...:
+          ...
+
+  # ── 14. OrderedDict on 3.7+ ─────────────────────────────────────────────
+  # modules/collections.md — dict preserves insertion order since 3.7
+  - id: cpy-ordereddict-redundant
+    message: |
+      `collections.OrderedDict` is rarely needed since 3.7 (`dict` preserves
+      insertion order). Keep it only if you actually use `move_to_end()`,
+      `popitem(last=False)`, or order-aware `__eq__`.
+      See modules/collections.md.
+    languages: [python]
+    severity: INFO
+    metadata: { category: modernization, source: cpython-pitfalls }
+    patterns:
+      - pattern-either:
+          - pattern: collections.OrderedDict()
+          - pattern: OrderedDict()
+
+  # ── 15. open() without encoding= (locale-dependent) ─────────────────────
+  # modules/pathlib.md — `Path.read_text()` defaults likewise; explicit utf-8
+  - id: cpy-open-without-encoding
+    message: |
+      `open(path)` (text mode) without `encoding=` falls back to the locale
+      encoding — works on Linux/macOS, breaks on Windows (cp1252/gbk).
+      Fix: `open(path, encoding="utf-8")` or `Path(path).read_text(encoding="utf-8")`.
+      PEP 597 raises EncodingWarning when this is hit.
+      See modules/pathlib.md.
+    languages: [python]
+    severity: WARNING
+    metadata: { category: portability, source: cpython-pitfalls }
+    patterns:
+      - pattern-either:
+          - pattern: open($P)
+          - pattern: open($P, $MODE)
+      - pattern-not: open($P, ..., encoding=...)
+      - pattern-not: open($P, "rb")
+      - pattern-not: open($P, "wb")
+      - pattern-not: open($P, "ab")
+      - pattern-not: open($P, "rb", ...)
+      - pattern-not: open($P, "wb", ...)
+      - pattern-not: open($P, "xb")
+      - pattern-not: open($P, mode="rb")
+      - pattern-not: open($P, mode="wb")

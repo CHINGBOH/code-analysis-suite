@@ -1,0 +1,270 @@
+# wtfpython.yml — semgrep rules for statically-detectable Python gotchas
+# documented in https://github.com/satwikkansal/wtfpython (mirrored locally at
+# /home/l/projects/python-bug-corpus/wtfpython/README.md).
+#
+# Scope: only includes gotchas that produce a real bug in normal code (not
+# CPython implementation curiosities like small-int interning that are
+# fact-of-life but rarely cause bugs).
+#
+# Each rule's `message` links to the README anchor by line number (README is
+# stable enough that anchors only drift by a few lines between minor revisions).
+#
+# Severity convention:
+#   ERROR    — almost-always-a-bug (mutable default arg, NaN equality, …)
+#   WARNING  — usually-a-bug (type() ==, list*n shared ref, …)
+#   INFO     — code smell (wildcard import, __del__ defined, …)
+
+rules:
+  # ── 1. mutable default argument ─────────────────────────────────────────
+  # wtfpython §"Beware of default mutable arguments!" (README ~L2560)
+  - id: wtf-mutable-default-arg
+    message: |
+      Mutable default argument — the same list/dict/set is shared across calls.
+      Fix: use `None` as sentinel and create the container inside the body.
+      See wtfpython "Beware of default mutable arguments!".
+    languages: [python]
+    severity: ERROR
+    metadata: { category: correctness, source: wtfpython }
+    patterns:
+      - pattern-either:
+          - pattern: |
+              def $F(..., $X=[], ...):
+                ...
+          - pattern: |
+              def $F(..., $X={}, ...):
+                ...
+          - pattern: |
+              def $F(..., $X=set(), ...):
+                ...
+          - pattern: |
+              def $F(..., $X=dict(), ...):
+                ...
+          - pattern: |
+              def $F(..., $X=list(), ...):
+                ...
+
+  # ── 2. mutable class attribute used as instance state ───────────────────
+  # wtfpython §"Class attributes and instance attributes" (README ~L1645)
+  - id: wtf-mutable-class-attr
+    message: |
+      Mutable class attribute is shared across all instances. If you mutate
+      it via `self.attr.append(...)`, every instance sees the change.
+      Fix: initialise inside __init__.
+      See wtfpython "Class attributes and instance attributes".
+    languages: [python]
+    severity: WARNING
+    metadata: { category: correctness, source: wtfpython }
+    patterns:
+      - pattern-either:
+          - pattern: |
+              class $C(...):
+                  ...
+                  $A = []
+          - pattern: |
+              class $C(...):
+                  ...
+                  $A = {}
+          - pattern: |
+              class $C(...):
+                  ...
+                  $A = set()
+
+  # ── 3. `is` with a literal ──────────────────────────────────────────────
+  # wtfpython §"How not to use `is` operator" (README ~L448)
+  - id: wtf-is-with-literal
+    message: |
+      `is` checks identity, not equality. Comparing against an int/str/float
+      literal relies on CPython interning and breaks unpredictably.
+      Fix: use `==`. (`is None` / `is True` / `is False` are the only safe forms.)
+      See wtfpython "How not to use `is` operator".
+    languages: [python]
+    severity: ERROR
+    metadata: { category: correctness, source: wtfpython }
+    patterns:
+      - pattern-either:
+          - pattern: $X is $Y
+          - pattern: $X is not $Y
+      - metavariable-pattern:
+          metavariable: $Y
+          patterns:
+            - pattern-either:
+                - patterns:
+                    - pattern-regex: '^("|''|f"|f''|-?\d)'
+                    - pattern-not-regex: '^(True|False|None|Ellipsis|NotImplemented)$'
+
+  # ── 4. NaN equality ─────────────────────────────────────────────────────
+  # wtfpython §"Nan-reflexivity" (README ~L1822)
+  - id: wtf-nan-equality
+    message: |
+      NaN is not equal to itself — any `== float('nan')` or `nan == nan`
+      always evaluates to False.
+      Fix: use `math.isnan(x)`.
+      See wtfpython "Nan-reflexivity".
+    languages: [python]
+    severity: ERROR
+    metadata: { category: correctness, source: wtfpython }
+    patterns:
+      - pattern-either:
+          - pattern: $X == float("nan")
+          - pattern: float("nan") == $X
+          - pattern: $X == math.nan
+          - pattern: math.nan == $X
+          - pattern: $X == np.nan
+          - pattern: np.nan == $X
+          - pattern: $X != float("nan")
+          - pattern: $X != math.nan
+          - pattern: $X != np.nan
+
+  # ── 5. assigning the None return of a mutating method ───────────────────
+  # wtfpython §"All sorted?" (README ~L3139)
+  - id: wtf-mutating-method-returns-none
+    message: |
+      `list.sort()`, `list.reverse()`, `list.append()`, `list.extend()`,
+      `dict.update()`, `set.add()`, `set.update()` all mutate in place and
+      return None. Assigning the result throws away your data.
+      Fix: drop the assignment, or use `sorted(x)` / `reversed(x)` instead.
+      See wtfpython "All sorted?".
+    languages: [python]
+    severity: ERROR
+    metadata: { category: correctness, source: wtfpython }
+    patterns:
+      - pattern-either:
+          - pattern: $X = $L.sort()
+          - pattern: $X = $L.reverse()
+          - pattern: $X = $L.append(...)
+          - pattern: $X = $L.extend(...)
+          - pattern: $X = $D.update(...)
+          - pattern: $X = $S.add(...)
+
+  # ── 6. wildcard import ──────────────────────────────────────────────────
+  # wtfpython §"Wild imports" (README ~L3075)
+  - id: wtf-wildcard-import
+    message: |
+      `from X import *` pollutes the namespace and lets X silently shadow
+      built-ins (e.g. `from numpy import *` shadows `min`, `max`, `sum`,
+      `abs`). It also breaks static analyzers.
+      Fix: import names explicitly, or `import X as x`.
+      See wtfpython "Wild imports".
+    languages: [python]
+    severity: WARNING
+    metadata: { category: maintainability, source: wtfpython }
+    pattern: from $M import *
+
+  # ── 7. list multiplication of a mutable produces shared refs ────────────
+  # wtfpython §"Schrödinger's variable" / generalised
+  - id: wtf-list-mul-shared-ref
+    message: |
+      `[[]] * n`, `[{}] * n`, `[set()] * n` produce a list of N references
+      to the *same* object — mutating one mutates all of them.
+      Fix: `[[] for _ in range(n)]`.
+    languages: [python]
+    severity: WARNING
+    metadata: { category: correctness, source: wtfpython }
+    patterns:
+      - pattern-either:
+          - pattern: "[[]] * $N"
+          - pattern: "[{}] * $N"
+          - pattern: "[set()] * $N"
+          - pattern: "[dict()] * $N"
+          - pattern: "[list()] * $N"
+          - pattern: "$N * [[]]"
+          - pattern: "$N * [{}]"
+
+  # ── 8. modifying a dict / list while iterating ──────────────────────────
+  # wtfpython §"Modifying a dictionary while iterating over it" (README ~L2190)
+  #           §"Deleting a list item while iterating"             (README ~L2368)
+  - id: wtf-modify-collection-while-iter
+    message: |
+      Mutating a dict/list while iterating over it skips elements or raises
+      RuntimeError. Fix: iterate over `list(d)` / a copy, or build a new
+      collection.
+      See wtfpython "Modifying a dictionary while iterating over it" /
+      "Deleting a list item while iterating".
+    languages: [python]
+    severity: ERROR
+    metadata: { category: correctness, source: wtfpython }
+    patterns:
+      - pattern-either:
+          - pattern: |
+              for $K in $D:
+                  ...
+                  del $D[...]
+          - pattern: |
+              for $K in $D:
+                  ...
+                  $D.pop(...)
+          - pattern: |
+              for $X in $L:
+                  ...
+                  $L.remove(...)
+          - pattern: |
+              for $X in $L:
+                  ...
+                  $L.pop(...)
+
+  # ── 9. type(x) == cls instead of isinstance ─────────────────────────────
+  # wtfpython §"Subclass relationships" (README ~L1221) — related
+  - id: wtf-type-equality-check
+    message: |
+      `type(x) == int` (or `type(x) is int`) excludes subclasses and
+      silently breaks polymorphism (`bool` is a subclass of `int`!).
+      Fix: `isinstance(x, int)`.
+      See wtfpython "Subclass relationships".
+    languages: [python]
+    severity: WARNING
+    metadata: { category: correctness, source: wtfpython }
+    patterns:
+      - pattern-either:
+          - pattern: type($X) == $T
+          - pattern: type($X) is $T
+          - pattern: $T == type($X)
+          - pattern: $T is type($X)
+
+  # ── 10. __del__ defined ─────────────────────────────────────────────────
+  # wtfpython §"Stubborn `del` operation" (README ~L2228)
+  - id: wtf-del-method-defined
+    message: |
+      Defining `__del__` is a footgun: it doesn't run reliably, breaks
+      garbage-collection of reference cycles, and can swallow exceptions.
+      Fix: use a context manager or `weakref.finalize`.
+      See wtfpython "Stubborn `del` operation".
+    languages: [python]
+    severity: INFO
+    metadata: { category: maintainability, source: wtfpython }
+    pattern: |
+      def __del__(self, ...):
+          ...
+
+  # ── 11. yield inside finally ────────────────────────────────────────────
+  # generator-cleanup corner-case (related to "Yielding from... return!")
+  - id: wtf-yield-in-finally
+    message: |
+      `yield` inside `finally` makes generator cleanup ambiguous — if the
+      generator is closed early, the yielded value is lost and exceptions
+      may be silently swallowed.
+      Fix: keep `yield` out of `finally`.
+    languages: [python]
+    severity: WARNING
+    metadata: { category: correctness, source: wtfpython }
+    pattern: |
+      try:
+          ...
+      finally:
+          ...
+          yield ...
+
+  # ── 12. except: bare ─ included for completeness (wtfpython §Catching) ──
+  - id: wtf-bare-except
+    message: |
+      Bare `except:` also catches `KeyboardInterrupt` and `SystemExit`,
+      making programs un-killable.
+      Fix: `except Exception:` (or a specific class).
+      See wtfpython "Catching the Exceptions".
+    languages: [python]
+    severity: WARNING
+    metadata: { category: correctness, source: wtfpython }
+    pattern: |
+      try:
+          ...
+      except:
+          ...

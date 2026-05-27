@@ -1,6 +1,6 @@
 # Architecture
 
-> How `code_analysis_suite` turns one `analyze` invocation into a cross-repo brain.
+> How `code_analysis_suite` maps source code around the main trunk: deployable units, entrypoints, exposed interfaces, business-flow skeletons, and reusable assets.
 
 ## High-level
 
@@ -22,7 +22,7 @@ flowchart TB
     subgraph Suite["🔬 code_analysis_suite"]
         CLI[bin/repo-inv<br/>commander CLI]
         MCP[bin/repo-inv-mcp.mjs<br/>stdio MCP server]
-        Runner[lib/runner.js<br/>3-layer orchestrator]
+        Runner[lib/runner.js<br/>anatomy + 3-layer orchestrator]
         Tools[lib/tools.js<br/>29-tool registry]
         DB[(SQLite + FTS5<br/>~/.cache/repo-inv/index.db)]
         Env[lib/env.js<br/>.env loader]
@@ -44,7 +44,8 @@ flowchart TB
     Agents -- MCP stdio --> MCP
     CLI --> Runner
     MCP --> Runner
-    Runner --> Tools
+    Runner --> Anatomy[lib/anatomy.js<br/>entrypoint-first trunk mapper + profile standards]
+        Runner --> Tools
     Tools --> T1 & T2 & T3 & T4
     Runner --> DB
     Runner -- learn/recommend --> L1
@@ -66,7 +67,10 @@ sequenceDiagram
     U->>CLI: repo-inv analyze /target --parallel
     CLI->>R: orchestrate(target, layers, parallel=true)
 
-    par Architecture layer
+    par Anatomy layer
+        R->>T: static repo walk, package manifests, deployment files
+        T-->>R: entrypoints, units, interfaces, flows
+    and Architecture layer
         R->>T: scc, tokei, pydeps, madge, ...
         T-->>R: JSON/SVG/dot outputs
     and Logic layer
@@ -77,7 +81,7 @@ sequenceDiagram
         T-->>R: text outputs
     end
 
-    R->>FS: write 01-arch/, 02-logic/, 03-efficiency/
+    R->>FS: write 00-anatomy/, 01-arch/, 02-logic/, 03-efficiency/
     R->>R: aggregate → report.json + SUMMARY.md
     R->>FS: write report.json, SUMMARY.md
     R->>DB: upsertReport(report.json)
@@ -89,6 +93,8 @@ sequenceDiagram
 
 | Layer | Dir | Question | Primary outputs |
 |---|---|---|---|
+| **Standards** | built-in | *Which benchmark profile applies? generic, pure-agent, RAG-agent, CRM-agent* | `STANDARD_ARCHITECTURE.md`, `STANDARD_EVALUATION.md` |
+| **Anatomy** | `00-anatomy/` | *What is the main trunk? Which deployable units and entrypoints exist?* | `anatomy.json`, `ANATOMY.md`, `BUSINESS_FLOWS.md`, `BORROWABLES.md` |
 | **Architecture** | `01-arch/` | *What modules exist? How do they connect?* | `scc.json`, `tokei.json`, `pydeps.svg`, `madge-circular.txt`, `code2flow.gv`, `git-contributors.txt` |
 | **Logic** | `02-logic/` | *Where's the complexity, duplication, risk?* | `semgrep.json`, `lizard.txt`, `jscpd/`, `vulture.txt`, `bandit.json`, `pyright.json` |
 | **Efficiency** | `03-efficiency/` | *How does complexity evolve over time?* | `radon-cc.txt`, `radon-mi.txt`, `wily.txt`, optional `py-spy.svg`, `memray.html` |
@@ -154,7 +160,7 @@ analyzed repo. Powers `repo-inv search` and `MCP search_knowledge`.
 code_analysis_suite/
 ├── bin/
 │   ├── repo-inv              # commander CLI, 12 subcommands, install-mcp logic
-│   └── repo-inv-mcp.mjs      # stdio MCP server, 9 tools
+│   └── repo-inv-mcp.mjs      # stdio MCP server, 17 tools
 ├── lib/
 │   ├── runner.js             # 3-layer orchestrator + SUMMARY/report builders
 │   ├── tools.js              # static registry of all 29 wrapped tools

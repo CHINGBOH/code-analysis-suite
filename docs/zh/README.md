@@ -6,10 +6,61 @@
 > 里指向这个 suite → Agent 会自动调用本仓库内 29 个静态分析工具，把目标仓库的
 > **架构、业务逻辑、代码质量**全部扒出来，输出结构化材料供你借鉴、学习、引用。
 
+## 项目目的
+
+**这个仓库是一个工具箱。你（AI）调它的工具，而不是用手读源代码。**
+
+人类完全用 AI 写代码。他要的不是 AI 去 grep、扫一眼、猜一下——是让 AI **真的
+调用分析器**去测**架构 / 函数 / 边界 / 运维 / 解析效率 / 运行效率**这些问题，
+然后引用结构化输出。**调对工具 = 任务完成**。不读代码、不发表观点、不靠感觉
+debug。
+
+读这一节的有两种 AI：
+
+1. **在本仓库内的 AI** —— 用户 `cd` 到 `code_analysis_suite/` 时调起的你。
+   你的任务是知道 `repo-inv` 暴露了什么、怎么调。
+2. **用本仓库去解剖另一个源代码的 AI** —— 用户指给你一个陌生项目。你的任务
+   **不是**逐文件读它，而是**对它跑 `repo-inv`，引用 `repo-inv` 输出的内容**。
+
+无论哪种，规则只有一条：**选问题维度 → 调工具 → 引用输出 → 完事。**
+
+### 按问题维度查工具
+
+| 用户问的是… | 调（CLI / MCP） | 落盘 / 返回的内容 |
+|---|---|---|
+| **架构** —— 入口、可部署单元、模块、依赖图 | `repo-inv dissect <repo>`  ·  `repo-inv analyze <repo> -l anatomy,arch`  ·  MCP `dissect_repo` / `get_entrypoints` / `get_deployable_units` | `00-anatomy/ANATOMY.md` · `01-arch/{scc.json,tokei.json,pydeps.svg,madge-circular.txt,depcruise.json,pyan3-callgraph.dot}` |
+| **函数质量** —— 复杂度、重复、反模式、死代码 | `repo-inv analyze <repo> -l logic`  ·  MCP `analyze_repo` | `02-logic/{lizard.txt,lizard.xml,semgrep.json,jscpd/,ast-grep.json,vulture.txt,bandit.json,mypy.txt,pyright.txt}` |
+| **模块 / 边界** —— 循环依赖、分层越权、惯用法 | `repo-inv patterns <repo>`  ·  `analyze -l arch`  ·  MCP `patterns_of_repo` / `repos_with_pattern` | `madge-circular.txt` · `depcruise.json` · semgrep pattern 命中 + DB 持久化的 pattern 目录 |
+| **运维形态** —— 部署单元、CI 在不在、运行时类型 | `repo-inv dissect <repo>`（anatomy 自动识别 Dockerfile / compose / `package.json bin` / `pyproject.toml [scripts]` / k8s yaml / `.github/workflows/`） | `ANATOMY.md → deployable_units[]` + 缺 manifest 时打 `deployment_gap` 风险 |
+| **解析 / 体量** —— 语言分布、LOC、文件数 | `repo-inv analyze -l arch`（scc + tokei） | `01-arch/scc.json` · `tokei.json` |
+| **运行效率** —— 复杂度热点、演化、内存、profiling | `repo-inv analyze -l efficiency`（radon · wily · py-spy · memray —— 后两个需要可跑场景） | `03-efficiency/{radon-cc.txt,radon-mi.txt,wily.txt,py-spy.svg,memray.bin,memray.html}` |
+| **跨仓库先例** —— "有没有人已经解过这题" | `repo-inv search "<查询>"`  ·  `borrow "<话题>"`  ·  `compare <a> <b>`  ·  `recommend "<任务>"`  ·  MCP `search_knowledge` / `borrow_guide` / `compare_repos` / `recommend` | FTS5 命中 `LEARNINGS.md` + `SUMMARY.md` · 排序后的借鉴目标 · 并排指标对比 · DeepSeek 推荐 |
+| **综合"该学什么"** | `repo-inv learn [outdir]`（DeepSeek） | `LEARNINGS.md` —— 在指标旁边附上明确的"为什么"注释 |
+| **抠一段代码出来** | `repo-inv extract <repo> <file> --out <dir>`  ·  MCP `extract_code` | 可移植切片 = 目标文件 + 1-hop 内部 import |
+| **反向使用：检查用户自己项目** | `repo-inv review <repo>`  ·  `audit <repo> --against <excellent-repo>`  ·  MCP `project_review` / `audit_project` | 架构 / 骨架 / 业务 / 复制风险的 markdown 报告 |
+
+### 操作规则
+
+- **能用工具回答的问题，不要自己读源码。** 上表覆盖了四层全部维度；只有当问题
+  不属于任何一行时，grep / Read 才是合理的回退。
+- **引用工具输出的文件路径。** 答用户的时候指 `~/.cache/repo-inv/<repo>-<ts>/<层>/<文件>`，
+  不要指你自己脑补出的解释。
+- **工具缺席不是失败。** `repo-inv tools` 列出本机装了哪些分析器，没装的会被
+  静默跳过。装了哪些就跑哪些。
+- **MCP 是首选入口。** `repo-inv install-mcp <host>` 把 `bin/repo-inv-mcp.mjs`
+  连进 Claude Code / Cursor / Codex / Gemini / Windsurf / Copilot——之后上表
+  每一行都是一次 MCP 调用就拿下。
+
+**任务完成判据：调了相关工具，引用了它的输出。不是"AI 形成了某种架构观点"。**
+
+---
+
 **不是给人手动跑的 CLI**，而是给 agent 当"侦察兵"——你只负责选目标，让 agent 跑工具读结果。
 
 > 🤖 Agent 来源不限：所有支持 MCP 或 shell 的 AI 编码助手都能用。
 > 完整通用契约见 [AGENTS.md](./AGENTS.md)，CLI / MCP 工具清单见 `repo-inv manifest`。
+>
+> 📐 **[AI 开发标准](./AI_DEV_STANDARD.md)** —— "调工具优先"的开发标尺，覆盖架构 / 函数 / 运维 / 反幻想纪律 / 6 类领域 profile（RAG / CRM / Agent / Event-driven / Pipeline / SDK），用来量任何仓库（别人的或自己的）。
 
 ---
 

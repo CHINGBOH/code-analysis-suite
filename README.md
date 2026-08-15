@@ -8,24 +8,18 @@
 indexes the result into a cross-repo knowledge base, then helps your AI coding agent
 map the main trunk first: deployable units, entrypoints, exposed interfaces, business-flow skeletons, borrowable assets, and then test your own project against that trunk.*
 
-[![CI](https://github.com/CHINGBOH/code-analysis-suite/actions/workflows/ci.yml/badge.svg)](https://github.com/CHINGBOH/code-analysis-suite/actions/workflows/ci.yml)
-[![Node](https://img.shields.io/badge/node-%E2%89%A518-339933?logo=node.js&logoColor=white)](#installation)
-[![MCP](https://img.shields.io/badge/MCP-stdio-blue)](#mcp-integration)
-[![Agents](https://img.shields.io/badge/agents-Claude%20Code%20%7C%20Codex%20%7C%20Copilot%20%7C%20Cursor%20%7C%20Gemini%20%7C%20Windsurf-orange)](docs/MCP.md)
-[![Tools](https://img.shields.io/badge/wrapped%20tools-29-success)](docs/USAGE.md#wrapped-tools)
-[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-
-[Quick Start](#-quick-start) ·
-[How it works](#-how-it-works) ·
-[Architecture](docs/ARCHITECTURE.md) ·
-[MCP setup](docs/MCP.md) ·
-[中文文档](docs/zh/README.md)
+<p>
+<img alt="status" src="https://img.shields.io/badge/status-agent%20toolkit-success?style=flat-square">
+<img alt="license" src="https://img.shields.io/badge/license-MIT-green?style=flat-square">
+<img alt="last commit" src="https://img.shields.io/github/last-commit/CHINGBOH/code-analysis-suite?style=flat-square">
+<img alt="repo size" src="https://img.shields.io/github/repo-size/CHINGBOH/code-analysis-suite?style=flat-square">
+</p>
 
 </div>
 
 ---
 
-## ✨ Why this exists
+## 📖 简介 · About
 
 **This repo is a toolbox. You — the AI — call its tools instead of reading
 source code by hand.**
@@ -82,7 +76,12 @@ tool → cite the output → task done.**
 **Task completion criterion: the relevant tool was called and its output was
 quoted. Not "the AI formed an architectural opinion".**
 
-## 🚀 Quick Start
+- 🧭 **一条命令分析仓库** — `repo-inv analyze /path/to/repo --parallel` 生成机器报告与摘要
+- 🧠 **跨仓知识库** — 分析结果索引到 `~/.cache/repo-inv/index.db`，支持 list/search/compare/recommend
+- 🔌 **MCP 集成** — `repo-inv-mcp` 为多类 Agent 主机暴露 stdio 工具
+- 🏗️ **三层分析管道** — 架构、业务逻辑、效率/演化三类静态分析汇总
+- �� **规则与模式库** — `rules/patterns.yml` 保存 Semgrep 模式与可复用经验
+- 📚 **双语文档** — `docs/` 含架构、用例、MCP 与中文说明
 
 ```bash
 # 1. One-time install
@@ -139,48 +138,58 @@ Entrypoint-first anatomy plus three evidence layers, one report:
 | **🧠 Business logic** | *Where is the complexity, the duplication, the security risk?* | semgrep (+ curated wtfpython gotcha rules), lizard, jscpd, vulture, bandit, gosec, pyright, mypy |
 | **⚡ Efficiency** | *How does complexity evolve, where's the hot path?* | radon, wily, py-spy, memray |
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full pipeline diagram and the
-[knowledge-base schema](docs/ARCHITECTURE.md#knowledge-base-schema).
+- Node.js 18+
+- npm
+- 可选：Python / Go / Rust / Java 等语言工具链；缺失的静态分析器会自动跳过
 
-## 📦 Installation
-
-**Prerequisites:** Node ≥18, Python ≥3.10. Optional analyzers (Go, Rust, Java) are
-auto-skipped if missing — `repo-inv tools` shows what's available on your machine.
+### 安装 · Installation
 
 ```bash
-git clone https://github.com/<you>/code_analysis_suite
-cd code_analysis_suite
+# 1. 克隆并进入项目
+git clone https://github.com/CHINGBOH/code-analysis-suite.git
+cd code-analysis-suite
+
+# 2. 安装 Node 依赖
 npm install
-sudo npm link             # exposes `repo-inv` and `repo-inv-mcp` globally
-pip install -r requirements.txt   # optional Python analyzers
-repo-inv tools                    # see what's installed
+
+# 3. 暴露 CLI / MCP 命令
+sudo npm link
+
+# 4. 查看可用分析器
+repo-inv tools
+
+# 5. 分析任意已克隆仓库
+repo-inv analyze /path/to/some-cloned-oss-repo --parallel
 ```
 
-For LLM-powered subcommands (`learn`, `recommend`), add a `.env` in the suite root:
+## 📂 目录结构 · Project Structure
 
-```bash
-DEEPSEEK_API_KEY=sk-...
-# OPENAI_API_KEY=sk-...        # (planned)
-# ANTHROPIC_API_KEY=sk-ant-... # (planned)
+```text
+code-analysis-suite/
+├── .agents/          # Skill / Agent 侧说明
+├── .github/          # GitHub 工作流与项目配置
+├── bin/              # repo-inv CLI 与 repo-inv-mcp 入口
+├── docs/             # 架构、用法、MCP、中文文档
+├── lib/              # runner、tools、db、env 核心实现
+├── rules/            # Semgrep / 模式规则
+├── AGENTS.md         # 通用 Agent Contract
+├── CONTRIBUTING.md   # 贡献说明
+├── LICENSE           # MIT License
+├── package.json      # Node 包与 bin 映射
+└── README.md         # 项目门面入口
 ```
 
-## 🔌 MCP integration
+## 🛠️ 技术栈 · Built With
 
-`repo-inv install-mcp <host>` registers an idempotent stdio MCP server with any of:
+![JavaScript](https://img.shields.io/badge/JavaScript-F7DF1E?style=flat&logo=javascript&logoColor=black)
+![Node.js](https://img.shields.io/badge/Node.js-339933?style=flat&logo=nodedotjs&logoColor=white)
+![SQLite](https://img.shields.io/badge/SQLite-003B57?style=flat&logo=sqlite&logoColor=white)
+![MCP](https://img.shields.io/badge/MCP-stdio-5B5FC7?style=flat&logo=protocolsdotio&logoColor=white)
+![Shell](https://img.shields.io/badge/Shell-4EAA25?style=flat&logo=gnubash&logoColor=white)
 
-| Host | Config touched |
-|---|---|
-| `copilot` | `~/.copilot/mcp-config.json` |
-| `cursor` | `~/.cursor/mcp.json` |
-| `gemini` | `~/.gemini/settings.json` |
-| `codex` | `~/.codex/config.toml` |
-| `windsurf` | `~/.codeium/windsurf/mcp_config.json` |
-| `claude-desktop` | `~/.config/claude/claude_desktop_config.json` |
-| `claude-code` | wraps `claude mcp add` |
-| `hermes` | prints a generic stdio template |
+## 📄 License
 
-Each write is backed up to `<file>.bak`. Use `--dry-run` to preview, `--all` for
-every host whose config already exists. Full details: [docs/MCP.md](docs/MCP.md).
+[MIT](LICENSE) — © 2026 code_analysis_suite contributors.
 
 The server exposes **17 tools**: `list_repos`, `search_knowledge`, `compare_repos`,
 `get_repo_details`, `patterns_of_repo`, `repos_with_pattern`, `extract_code`,

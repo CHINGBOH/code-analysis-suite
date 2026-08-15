@@ -1,242 +1,39 @@
-<div align="center">
-
 # 🔬 Code Analysis Suite
 
-**The agent-facing toolkit for learning from excellent source code and reviewing your own projects.**
+面向 AI Agent 的源码剖析工具箱：`repo-inv analyze <path>` 一条命令驱动 29 个静态分析器，产出四层证据（解剖 / 架构 / 逻辑 / 效率），建交叉仓库 SQLite 索引供检索、对比与反向审查。**目标仓库永不被修改。**
 
-*One command — `repo-inv analyze <path>` — drives 29 best-in-class static analyzers,
-indexes the result into a cross-repo knowledge base, then helps your AI coding agent
-map the main trunk first: deployable units, entrypoints, exposed interfaces, business-flow skeletons, borrowable assets, and then test your own project against that trunk.*
-
-<p>
-<img alt="status" src="https://img.shields.io/badge/status-agent%20toolkit-success?style=flat-square">
-<img alt="license" src="https://img.shields.io/badge/license-MIT-green?style=flat-square">
-<img alt="last commit" src="https://img.shields.io/github/last-commit/CHINGBOH/code-analysis-suite?style=flat-square">
-<img alt="repo size" src="https://img.shields.io/github/repo-size/CHINGBOH/code-analysis-suite?style=flat-square">
-</p>
-
-</div>
-
----
-
-## 📖 简介 · About
-
-**This repo is a toolbox. You — the AI — call its tools instead of reading
-source code by hand.**
-
-The human writes code with AI exclusively. What they need is not for the AI
-to grep, skim, and guess — but for the AI to **invoke real analyzers**
-that test for architecture / function / boundary / ops / parse-efficiency /
-runtime-efficiency problems, then cite the structured output. Calling the
-right tool *is* the deliverable. No code-reading, no opinion-forming, no
-debug-by-vibe.
-
-There are two AIs reading this section:
-
-1. **An AI inside this repo** — invoked while the user is `cd`'d into
-   `code_analysis_suite/`. Your job is to know what `repo-inv` exposes and
-   call it.
-2. **An AI using this repo to dissect *some other* source code** — the user
-   pointed you at an unfamiliar codebase. Your job is **not** to read it
-   file-by-file; it is to call `repo-inv` against it and quote what comes
-   back.
-
-Either way the rule is the same: **pick the problem dimension → call the
-tool → cite the output → task done.**
-
-### Tool lookup by problem dimension
-
-| When the user asks about… | Call (CLI / MCP) | What lands on disk / in the response |
-|---|---|---|
-| **Architecture** — entrypoints, deployable units, modules, dep graph | `repo-inv dissect <repo>`  ·  `repo-inv analyze <repo> -l anatomy,arch`  ·  MCP `dissect_repo` / `get_entrypoints` / `get_deployable_units` | `00-anatomy/ANATOMY.md` · `01-arch/{scc.json,tokei.json,pydeps.svg,madge-circular.txt,depcruise.json,pyan3-callgraph.dot}` |
-| **Function quality** — complexity, duplication, anti-patterns, dead code | `repo-inv analyze <repo> -l logic`  ·  MCP `analyze_repo` | `02-logic/{lizard.txt,lizard.xml,semgrep.json,jscpd/,ast-grep.json,vulture.txt,bandit.json,mypy.txt,pyright.txt}` |
-| **Module / boundary** — circular imports, layer violations, idioms | `repo-inv patterns <repo>`  ·  `analyze -l arch`  ·  MCP `patterns_of_repo` / `repos_with_pattern` | `madge-circular.txt` · `depcruise.json` · semgrep pattern hits + DB-persisted pattern catalog |
-| **Ops surface** — deployable shape, CI presence, runtime kind | `repo-inv dissect <repo>` (anatomy detects Dockerfile / compose / `package.json bin` / `pyproject.toml [scripts]` / k8s yaml / `.github/workflows/`) | `ANATOMY.md → deployable_units[]` + risk `deployment_gap` if manifests missing |
-| **Parse / size** — language mix, LOC, file count | `repo-inv analyze -l arch` (scc + tokei) | `01-arch/scc.json` · `tokei.json` |
-| **Runtime efficiency** — complexity hotspots, evolution, memory, profiling | `repo-inv analyze -l efficiency` (radon · wily · py-spy · memray — last two need a runnable scenario) | `03-efficiency/{radon-cc.txt,radon-mi.txt,wily.txt,py-spy.svg,memray.bin,memray.html}` |
-| **Cross-repo precedent** — "has anyone already solved this?" | `repo-inv search "<query>"`  ·  `borrow "<topic>"`  ·  `compare <a> <b>`  ·  `recommend "<task>"`  ·  MCP `search_knowledge` / `borrow_guide` / `compare_repos` / `recommend` | FTS5 hits from `LEARNINGS.md` + `SUMMARY.md` · ranked borrow targets · side-by-side metric diff · DeepSeek pick |
-| **Synthesise "what to learn"** | `repo-inv learn [outdir]` (DeepSeek) | `LEARNINGS.md` — explicit *why*-annotations next to the metrics |
-| **Pull a piece of code out** | `repo-inv extract <repo> <file> --out <dir>`  ·  MCP `extract_code` | transplantable slice = target file + its 1-hop intra-repo imports |
-| **Reverse-instrument the user's own project** | `repo-inv review <repo>`  ·  `audit <repo> --against <excellent-repo>`  ·  MCP `project_review` / `audit_project` | architecture/skeleton/business/copy-risk markdown report |
-
-### Operating rules
-
-- **Do not read source files yourself when a tool covers the question.** The
-  catalogue above is exhaustive across the four layers; if the question
-  doesn't fit any row, that's the only time grep/Read is appropriate.
-- **Cite tool output by file path.** When you answer the user, point at
-  `~/.cache/repo-inv/<repo>-<ts>/<layer>/<file>` — not at your interpretation
-  of it.
-- **Tool absence is not failure.** `repo-inv tools` lists which analyzers are
-  installed locally; missing ones are silently skipped. Run what you have.
-- **MCP is the preferred surface.** `repo-inv install-mcp <host>` wires
-  `bin/repo-inv-mcp.mjs` into Claude Code / Cursor / Codex / Gemini /
-  Windsurf / Copilot — after that, every row above is one MCP call away.
-
-**Task completion criterion: the relevant tool was called and its output was
-quoted. Not "the AI formed an architectural opinion".**
-
-- 🧭 **一条命令分析仓库** — `repo-inv analyze /path/to/repo --parallel` 生成机器报告与摘要
-- 🧠 **跨仓知识库** — 分析结果索引到 `~/.cache/repo-inv/index.db`，支持 list/search/compare/recommend
-- 🔌 **MCP 集成** — `repo-inv-mcp` 为多类 Agent 主机暴露 stdio 工具
-- 🏗️ **三层分析管道** — 架构、业务逻辑、效率/演化三类静态分析汇总
-- �� **规则与模式库** — `rules/patterns.yml` 保存 Semgrep 模式与可复用经验
-- 📚 **双语文档** — `docs/` 含架构、用例、MCP 与中文说明
+## 快速开始
 
 ```bash
-# 1. One-time install
-git clone https://github.com/<you>/code_analysis_suite
-cd code_analysis_suite && npm install && sudo npm link
-
-# 2. (Optional) register the MCP server with your agent
-repo-inv install-mcp claude-code     # or: copilot / cursor / codex / gemini / windsurf
-
-# 3. Analyze any repository
-repo-inv standard --profile rag_agent
-repo-inv dissect /path/to/some-cloned-oss-repo --profile rag_agent
-repo-inv analyze /path/to/some-cloned-oss-repo --parallel
-
-# 4. Cross-repo brain (after you've analyzed a few)
-repo-inv list --by quality
-repo-inv search "retry OR backoff"
-repo-inv borrow "plugin system with hot reload"
-repo-inv audit my-project --against repo-fastapi --profile rag_agent
-repo-inv compare repo-fastapi repo-litestar
-repo-inv recommend "I need a plugin system with hot-reload"
-```
-
-Output lands in `~/.cache/repo-inv/<repo>-<ts>/` and the cross-repo index is at
-`~/.cache/repo-inv/index.db` (SQLite + FTS5). The target repo is **never modified**.
-
-## 🧠 How it works
-
-```mermaid
-flowchart LR
-    A[Cloned OSS repo] --> B[repo-inv analyze]
-    B --> C0[00-anatomy<br/>entrypoints · units · flows]
-    B --> C0
-    B --> C1[01-arch<br/>scc · tokei · madge<br/>pydeps · pyan3 · code2flow]
-    B --> C2[02-logic<br/>semgrep · lizard · jscpd<br/>vulture · bandit · gosec · mypy]
-    B --> C3[03-efficiency<br/>radon · wily · py-spy · memray]
-    C0 --> D[report.json<br/>SUMMARY.md]
-    C1 --> D
-    C2 --> D
-    C3 --> D
-    D --> E[(SQLite index<br/>~/.cache/repo-inv/index.db)]
-    E --> F1[repo-inv list/search/compare]
-    E --> F2[repo-inv recommend<br/>LLM-driven]
-    E --> F3[MCP server<br/>17 tools]
-    F3 --> G[Claude Code · Codex · Copilot<br/>Cursor · Gemini · Windsurf]
-```
-
-Entrypoint-first anatomy plus three evidence layers, one report:
-
-| Layer | Question it answers | Key tools |
-|---|---|---|
-| **🧭 Anatomy** | *What are the deployable units, entrypoints, interfaces, and main business trunks?* | built-in repo walk, manifests, route heuristics |
-| **🏗️ Architecture** | *What modules exist, how do they depend on each other?* | scc, tokei, pydeps, madge, dependency-cruiser, code2flow, pyan3 |
-| **🧠 Business logic** | *Where is the complexity, the duplication, the security risk?* | semgrep (+ curated wtfpython gotcha rules), lizard, jscpd, vulture, bandit, gosec, pyright, mypy |
-| **⚡ Efficiency** | *How does complexity evolve, where's the hot path?* | radon, wily, py-spy, memray |
-
-- Node.js 18+
-- npm
-- 可选：Python / Go / Rust / Java 等语言工具链；缺失的静态分析器会自动跳过
-
-### 安装 · Installation
-
-```bash
-# 1. 克隆并进入项目
 git clone https://github.com/CHINGBOH/code-analysis-suite.git
-cd code-analysis-suite
+cd code-analysis-suite && npm install && sudo npm link
 
-# 2. 安装 Node 依赖
-npm install
-
-# 3. 暴露 CLI / MCP 命令
-sudo npm link
-
-# 4. 查看可用分析器
-repo-inv tools
-
-# 5. 分析任意已克隆仓库
-repo-inv analyze /path/to/some-cloned-oss-repo --parallel
+repo-inv analyze /path/to/repo --parallel   # 分析任意仓库
+repo-inv search "retry OR backoff"          # 分析过几个仓库后跨仓检索
 ```
 
-## 📂 目录结构 · Project Structure
+## 常用命令
 
-```text
-code-analysis-suite/
-├── .agents/          # Skill / Agent 侧说明
-├── .github/          # GitHub 工作流与项目配置
-├── bin/              # repo-inv CLI 与 repo-inv-mcp 入口
-├── docs/             # 架构、用法、MCP、中文文档
-├── lib/              # runner、tools、db、env 核心实现
-├── rules/            # Semgrep / 模式规则
-├── AGENTS.md         # 通用 Agent Contract
-├── CONTRIBUTING.md   # 贡献说明
-├── LICENSE           # MIT License
-├── package.json      # Node 包与 bin 映射
-└── README.md         # 项目门面入口
-```
+| 要回答的问题 | 命令 |
+|---|---|
+| 架构 — 入口、部署单元、依赖图 | `repo-inv dissect <repo>` · `analyze <repo> -l anatomy,arch` |
+| 函数质量 — 复杂度、重复、死代码 | `repo-inv analyze <repo> -l logic` |
+| 模块边界 — 循环依赖、分层违规 | `repo-inv patterns <repo>` |
+| 效率 — 热点、演化、内存 | `repo-inv analyze <repo> -l efficiency` |
+| 跨仓先例 — 「有人解决过吗」 | `repo-inv search "<q>"` · `borrow "<topic>"` · `compare <a> <b>` |
+| 反向审查自己的项目 | `repo-inv review <repo>` · `audit <repo> --against <优秀仓库>` |
 
-## 🛠️ 技术栈 · Built With
+**Agent 规则**：能调工具就不读源码；引用工具输出按文件路径；工具缺失不是失败（`repo-inv tools` 查看已装分析器）。MCP 注册：`repo-inv install-mcp claude-code`，共 17 个工具，详见 [docs/MCP.md](docs/MCP.md)。
 
-![JavaScript](https://img.shields.io/badge/JavaScript-F7DF1E?style=flat&logo=javascript&logoColor=black)
-![Node.js](https://img.shields.io/badge/Node.js-339933?style=flat&logo=nodedotjs&logoColor=white)
-![SQLite](https://img.shields.io/badge/SQLite-003B57?style=flat&logo=sqlite&logoColor=white)
-![MCP](https://img.shields.io/badge/MCP-stdio-5B5FC7?style=flat&logo=protocolsdotio&logoColor=white)
-![Shell](https://img.shields.io/badge/Shell-4EAA25?style=flat&logo=gnubash&logoColor=white)
+## 目录
 
-## 📄 License
+- `bin/` CLI 与 MCP 入口 · `lib/` 核心实现 · `rules/` Semgrep 规则 · `docs/` 文档
+- ⚠️ `linux/ bash/ snapd/ cli/ cc-haha/` 等目录是**已分析项目的源码快照**（语料），非套件代码
 
-[MIT](LICENSE) — © 2026 code_analysis_suite contributors.
+## 文档
 
-The server exposes **17 tools**: `list_repos`, `search_knowledge`, `compare_repos`,
-`get_repo_details`, `patterns_of_repo`, `repos_with_pattern`, `extract_code`,
-`analyze_repo`, `recommend`, `get_standard_architecture`, plus architecture-learning tools `borrow_guide` and
-`project_review`, `dissect_repo`, `get_entrypoints`, `get_deployable_units`, `get_business_flows`, and `audit_project`.
+[AI 开发标准](docs/AI_DEV_STANDARD.md) · [架构](docs/ARCHITECTURE.md) · [用法](docs/USAGE.md) · [MCP](docs/MCP.md) · [贡献](CONTRIBUTING.md) · [中文](docs/zh/README.md)
 
-## 🗺️ Documentation
+## License
 
-- **[AI Development Standard](docs/AI_DEV_STANDARD.md)** — the tool-call-first yardstick; apply against any repo (yours or someone else's) to get an architecture / function / ops / discipline / profile-fit verdict
-- **[Architecture](docs/ARCHITECTURE.md)** — pipeline, data flow, SQLite schema
-- **[Usage examples](docs/USAGE.md)** — end-to-end walkthroughs of all 12 subcommands
-- **[MCP integration](docs/MCP.md)** — per-agent setup, tool reference
-- **[Agent contract](AGENTS.md)** — vendor-neutral conventions agents should follow
-- **[Contributing](CONTRIBUTING.md)** — add a new analyzer, add a new pattern rule
-- **[中文文档](docs/zh/README.md)** — original Chinese README
-
-## 🎯 Example output
-
-```bash
-$ repo-inv analyze ~/projects/fastapi --parallel
-🚀 Running 3 layers in parallel...
-  → 01-arch    scc · tokei · madge · pydeps   ✓ (12s)
-  → 02-logic   semgrep · lizard · jscpd · vulture · bandit · mypy   ✓ (54s)
-  → 03-efficiency  radon · wily   ✓ (8s)
-📝 Summary: ~/.cache/repo-inv/fastapi-20260524-1830/SUMMARY.md
-📊 Machine report: ~/.cache/repo-inv/fastapi-20260524-1830/report.json
-   Indexed as #7 in ~/.cache/repo-inv/index.db
-
-$ repo-inv recommend "add a retry+ratelimit HTTP layer to my agent"
-🤖 DeepSeek recommends:
-  1. Primary: tenacity (already indexed) — pure Python retry, exponential backoff
-  2. Pattern to borrow: fastapi/Middleware (file: fastapi/middleware/cors.py)
-  3. Avoid hotspot: requests_cache/backends/sqlite.py (CCN 67, fragile)
-  4. Action: repo-inv extract ~/projects/tenacity tenacity/_utils.py --out ./vendor
-```
-
-## 🤝 Contributing
-
-PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Particularly looking for:
-
-- New analyzer integrations (one entry in `lib/tools.js` + a runner section)
-- New semgrep pattern rules in `rules/patterns.yml` (architectural patterns) or
-  `rules/wtfpython.yml` (Python gotchas, sourced from
-  [satwikkansal/wtfpython](https://github.com/satwikkansal/wtfpython))
-- LLM provider abstraction (currently DeepSeek-only for `learn`/`recommend`)
-- More MCP host adapters in `install-mcp`
-
-## 📜 License
-
-[MIT](LICENSE) — © 2026 code_analysis_suite contributors
+[MIT](LICENSE)

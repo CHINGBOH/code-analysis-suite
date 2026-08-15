@@ -569,6 +569,7 @@ new row (propose a basis from the §0.4(a) tier table). Oldest open first.
 | C-017 | §5.4 event-driven idempotency + dedupe store | Kafka KIP-447 (exactly-once); SQS FIFO deduplication; cite both spec docs | 4 | open |
 | C-018 | §5.5 ETL DAG declarative-vs-imperative | Dagster `@asset` vs Airflow `@task` debate; cite Dagster RFC + Airflow TaskFlow proposal | 3 | open |
 | C-019 | §5.6 library no-side-effect-on-import | PEP 8 §"Module level dunder names"; httpx `__init__.py` (clean reference); compare to a counter-example | 2+3 | open |
+| C-020 | 提案：§1.2 新增反模式「装饰性入口 / 幽灵依赖」——`main.py` 仅打印 banner 却自称 CLI Orchestrator；`requirements.txt` 声明自有代码零引用的依赖 | 经验基础：2026-08-15 对 code-analysis-suite / survey-analysis-platform / lawfocus / legal-corpus 四个仓库审计，全部检出并清除；检测工具：vulture / deptry，或 `repo-inv analyze -l logic` 的 vulture 输出 | 5 | open |
 
 ### 8.2 Toolkit-gap backlog (each closes a `[gap]` marker)
 

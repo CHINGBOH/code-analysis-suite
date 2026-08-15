@@ -23,3 +23,18 @@ env/
 dist/
 build/
 .cache/
+
+# Logic-First Publishing Ignores (No Tooling Plumbing)
+pnpm-lock.yaml
+package-lock.json
+.prettier*
+.eslint*
+.env*
+components.json
+drizzle.config.ts
+vitest.config.ts
+vite.config.ts
+Dockerfile*
+docker-compose*.yml
+compose*.yaml
+nginx*.conf

@@ -4,3 +4,22 @@ node_modules/
 investigation-report/
 
 .env
+
+# Lean Architecture Anti-Bloat Filters
+__pycache__/
+*.py[cod]
+*$py.class
+*.bak
+*.tmp
+*.orig
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+*.tsbuildinfo
+*.log
+.venv/
+env/
+dist/
+build/
+.cache/

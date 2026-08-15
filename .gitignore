@@ -60,3 +60,8 @@ third-party/
 benchmarks/
 generated/
 migrations/
+
+# Root Loose HTML/JSON
+*.html
+*.json
+!package.json
